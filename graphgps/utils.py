@@ -264,12 +264,14 @@ def my_set_dataset_info(dataset):
         cfg.share.dim_out = 1
 
     # count number of dataset splits
+    # PyG >=2.5: Data.keys is a method; older versions exposed it as a property.
+    data_keys = dataset.data.keys() if callable(dataset.data.keys) else dataset.data.keys
     cfg.share.num_splits = 1
-    for key in dataset.data.keys:
+    for key in data_keys:
         if 'val' in key:
             cfg.share.num_splits += 1
             break
-    for key in dataset.data.keys:
+    for key in data_keys:
         if 'test' in key:
             cfg.share.num_splits += 1
             break

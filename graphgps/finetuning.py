@@ -116,7 +116,8 @@ def init_model_from_pretrained(model, pretrained_dir,
     ckpt_file = get_final_pretrained_ckpt(osp.join(pretrained_dir, str(seed), 'ckpt'))
     logging.info(f"[*] Loading from pretrained model: {ckpt_file}")
 
-    ckpt = torch.load(ckpt_file, map_location=device)
+    from graphgps.loader.torch_io import torch_load
+    ckpt = torch_load(ckpt_file, map_location=device)
     pretrained_dict = ckpt[MODEL_STATE]
     model_dict = model.state_dict()
 

@@ -27,6 +27,15 @@ def extended_cfg(cfg):
     # Additional name tag used in `run_dir` and `wandb_name` auto generation.
     cfg.name_tag = ""
 
+    # Torch device string used throughout training/logging. Upstream GraphGym
+    # replaced this with `accelerator`; keep `device` for this codebase.
+    cfg.device = 'cpu'
+
+    # Training loop mode: 'standard' (GraphGym) or a registered custom loop
+    # name such as 'custom' (see graphgps.train). Removed from upstream
+    # GraphGym; keep it here for this codebase.
+    cfg.train.mode = 'custom'
+
     # In training, if True (and also cfg.train.enable_ckpt is True) then
     # always checkpoint the current best model based on validation performance,
     # instead, when False, follow cfg.train.eval_period checkpointing frequency.

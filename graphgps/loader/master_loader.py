@@ -59,7 +59,7 @@ def log_loaded_in_memory_dataset(dataset, format, name):
     logging.info(f"  num node features: {dataset.num_node_features}")
     logging.info(f"  num edge features: {dataset.num_edge_features}")
     if hasattr(dataset, 'edge_index'):
-        logging.info(f"  avg num_edges/graph: ", dataset.edge_index.size(1) // len(dataset))
+        logging.info(f"  avg num_edges/graph: {dataset.edge_index.size(1) // len(dataset)}")
     if hasattr(dataset, 'num_tasks'):
         logging.info(f"  num tasks: {dataset.num_tasks}")
 

@@ -1,4 +1,7 @@
 # k-Maximum Inner Product Attention for Graph Transformers and the Expressive Power of GraphGPS
+
+> Adaptive-*k* extension notes (what we changed / how to run on Colab): [`README_ADAPTIVE_K.md`](README_ADAPTIVE_K.md)
+
 [![OpenReview](https://img.shields.io/badge/OpenReview-b31b1b.svg)](https://openreview.net/forum?id=4Y5kxbH2fI)
 [![arXiv](https://img.shields.io/badge/arXiv-b31b1b.svg)](https://arxiv.org/pdf/2604.03815)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

@@ -1,0 +1,33 @@
+# Lean Mac (Apple Silicon) stack — no CUDA / pykeops / cupy.
+# Setup:
+#   curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest | tar -xvj bin/micromamba
+#   micromamba create -n kmipattn python=3.10 pip -c conda-forge
+#   micromamba activate kmipattn
+#   pip install -r requirements-mac.txt
+#   pip install torch-scatter -f https://data.pyg.org/whl/torch-2.5.0+cpu.html
+#
+# Smoke:
+#   python main.py --cfg configs/LRGB/Peptides-func/defaults/GPS+kmip-linear-k.yaml \
+#     wandb.use False accelerator cpu optim.max_epoch 1
+torch==2.5.1
+torchvision==0.20.1
+torch-geometric==2.8.0.post1
+pytorch_lightning
+ogb
+yacs
+tqdm
+pyyaml
+scikit-learn
+pandas
+scipy
+numpy
+tensorboardX
+torchmetrics
+wandb
+einops
+rdkit
+performer-pytorch
+h5py
+networkx
+matplotlib
+psutil

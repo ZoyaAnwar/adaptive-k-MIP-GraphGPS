@@ -5,7 +5,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from pykeops.torch import LazyTensor
+try:
+    from pykeops.torch import LazyTensor
+    _HAS_KEOPS = True
+except ImportError:
+    LazyTensor = None
+    _HAS_KEOPS = False
+
 
 class SparseAttention(nn.Module):
     def __init__(
@@ -18,6 +24,7 @@ class SparseAttention(nn.Module):
         head_agg: str,
         random_attention: bool = False,
         random_fraction: float = 0.1,
+        use_keops: bool = True,
     ):
         """
         Args:
@@ -29,6 +36,7 @@ class SparseAttention(nn.Module):
             head_agg: how to aggregate the heads. Options are "Linear" and "None"
             random_attention: if True, first select `random_fraction` keys randomly, then select the k nearest keys
             random_fraction: the fraction of keys to select randomly
+            use_keops: prefer PyKeOps symbolic top-k when CUDA + pykeops are available
         """
         super().__init__()
 
@@ -39,6 +47,7 @@ class SparseAttention(nn.Module):
         self.k = k
         self.random_attention = random_attention
         self.random_fraction = random_fraction
+        self.use_keops = bool(use_keops and _HAS_KEOPS and torch.cuda.is_available())
 
         self.MQs = nn.Linear(dim, kq_dim * num_heads)  # query transformations
         self.MKs = nn.Linear(dim, kq_dim * num_heads)  # key transformations
@@ -57,7 +66,8 @@ class SparseAttention(nn.Module):
         self.MQs.reset_parameters()
         self.MKs.reset_parameters()
         self.MVs.reset_parameters()
-        self.MO.reset_parameters()
+        if hasattr(self, "MO"):
+            self.MO.reset_parameters()
 
     def nearest_k_keys(self, queries: torch.Tensor, keys: torch.Tensor) -> torch.Tensor:
         """
@@ -70,6 +80,13 @@ class SparseAttention(nn.Module):
         Returns:
             [**, num_heads, Nq, k]
         """
+        Nk = keys.shape[-2]
+        k = min(self.k, Nk)
+
+        if not self.use_keops:
+            # Naive dense top-k (CPU / MPS / no-KeOps). Fine for Peptides-scale graphs.
+            scores = torch.matmul(queries, keys.transpose(-1, -2)) / math.sqrt(self.kq_dim)
+            return scores.topk(k, dim=-1).indices
 
         # Raise an error if the memory has almost run out
         free_memory, _ = torch.cuda.mem_get_info()
@@ -91,7 +108,7 @@ class SparseAttention(nn.Module):
         # [**, num_heads, N, k]
         ndims = len(full_attention_weights.shape)
         assert ndims in [3,4]
-        nearest_key_indices = (-full_attention_weights).argKmin(self.k, dim=ndims-1)
+        nearest_key_indices = (-full_attention_weights).argKmin(k, dim=ndims-1)
 
         return nearest_key_indices
 
@@ -118,13 +135,14 @@ class SparseAttention(nn.Module):
 
         # --- Compute the attention weights: [**, num_heads, Nq, k] ---
 
-        # [**, num_heads, Nq, k]
+        # [**, num_heads, Nq, k_eff]  (k_eff = min(self.k, Nk))
         nearest_key_indices = self.nearest_k_keys(queries, keys)
+        k_eff = nearest_key_indices.shape[-1]
         assert nearest_key_indices.shape == (
             *trailing_dimensions,
             self.num_heads,
             Nq,
-            self.k,
+            k_eff,
         )
         # assert nearest_key_indices.is_contiguous()
 
@@ -132,7 +150,7 @@ class SparseAttention(nn.Module):
         # [**, num_heads, Nq, k, kq_dim]
         nearest_keys = torch.gather(
             input=keys.unsqueeze(-2).expand(
-                *keys.shape[:-1], self.k, self.kq_dim
+                *keys.shape[:-1], k_eff, self.kq_dim
             ),  # [**, num_heads, Nk, k, kq_dim]
             dim=-3,
             index=nearest_key_indices.unsqueeze(-1).expand(
@@ -144,7 +162,7 @@ class SparseAttention(nn.Module):
             *trailing_dimensions,
             self.num_heads,
             Nq,
-            self.k,
+            k_eff,
             self.kq_dim,
         )
         # assert nearest_keys.is_contiguous()
@@ -153,7 +171,7 @@ class SparseAttention(nn.Module):
         # [**, num_heads, Nq, k, val_dim]
         nearest_values = torch.gather(
             input=values.unsqueeze(-2).expand(
-                *keys.shape[:-1], self.k, self.val_dim
+                *keys.shape[:-1], k_eff, self.val_dim
             ),  # [**, num_heads, Nk, k, val_dim]
             dim=-3,
             index=nearest_key_indices.unsqueeze(-1).expand(
@@ -165,20 +183,20 @@ class SparseAttention(nn.Module):
             *trailing_dimensions,
             self.num_heads,
             Nq,
-            self.k,
+            k_eff,
             self.val_dim,
         )
         # assert nearest_values.is_contiguous()
 
         # [**, num_heads, Nq, k, kq_dim]
         queries_extended = queries.unsqueeze(-2).expand(
-            *queries.shape[:-1], self.k, self.kq_dim
+            *queries.shape[:-1], k_eff, self.kq_dim
         )
         assert queries_extended.shape == (
             *trailing_dimensions,
             self.num_heads,
             Nq,
-            self.k,
+            k_eff,
             self.kq_dim,
         )
         # assert queries_extended.is_contiguous()
@@ -192,7 +210,7 @@ class SparseAttention(nn.Module):
             *trailing_dimensions,
             self.num_heads,
             Nq,
-            self.k,
+            k_eff,
         )
         # assert largest_attention_weights.is_contiguous()
 

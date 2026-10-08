@@ -11,8 +11,13 @@ from typing import Any, Optional
 from torch_geometric.data import Data
 from torch_geometric.utils import degree
 import time
-import cupy as cp
-import cupyx.scipy.sparse.linalg
+try:
+    import cupy as cp
+    import cupyx.scipy.sparse.linalg
+    _HAS_CUPY = True
+except ImportError:
+    cp = None
+    _HAS_CUPY = False
 
 
 def bfs_shortest_path(source, G, max_n, cutoff):
@@ -173,8 +178,8 @@ def laplacian_matrix(senders: np.ndarray, receivers: np.ndarray,
   return lap
 
 
-def laplacian_matrix_cupy(senders: cp.ndarray, receivers: cp.ndarray,
-        weights: Optional[cp.ndarray] = None, n: Optional[int] = None) -> Any:
+def laplacian_matrix_cupy(senders: Any, receivers: Any,
+        weights: Optional[Any] = None, n: Optional[int] = None) -> Any:
   """Creates the laplacian matrix for given edge list.
   The edge list should be symmetric, and there should not be any isolated nodes.
   Args:
@@ -184,6 +189,8 @@ def laplacian_matrix_cupy(senders: cp.ndarray, receivers: cp.ndarray,
   Returns:
     A sparse Laplacian matrix
   """
+  if not _HAS_CUPY:
+    raise ImportError("cupy is required for laplacian_matrix_cupy (CUDA-only).")
 
   senders = cp.asarray(senders)
   receivers = cp.asarray(receivers)
@@ -225,6 +232,8 @@ def laplacian_eigenv(senders: np.ndarray,
         eigen_values: array of eigenvalues
         eigen_vectors: array of eigenvectors
     """
+    if not _HAS_CUPY:
+        raise ImportError("cupy is required for laplacian_eigenv (CUDA-only).")
     m = senders.shape[0]
     if weights is None:
         weights = cp.ones(m)

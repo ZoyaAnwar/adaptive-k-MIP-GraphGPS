@@ -13,7 +13,7 @@ from graphgps.utils import report_epoch_times, report_epoch_times2
 
 from torch_geometric.graphgym.cmd_args import parse_args
 from torch_geometric.graphgym.config import (cfg, dump_cfg,
-                                             set_agg_dir, set_cfg, load_cfg,
+                                             set_cfg, load_cfg,
                                              makedirs_rm_exist)
 # from torch_geometric.graphgym.loader import create_loader
 from torch_geometric.graphgym.logger import set_printing
@@ -187,6 +187,11 @@ if __name__ == '__main__':
         cfg.run_id = run_id
         seed_everything(cfg.seed)
         auto_select_device()
+        # Keep cfg.device in sync with GraphGym's accelerator setting (Mac/CPU).
+        if getattr(cfg, 'accelerator', None) == 'cpu' or not torch.cuda.is_available():
+            cfg.device = 'cpu'
+        elif cfg.accelerator == 'cuda':
+            cfg.device = 'cuda:0'
         if cfg.pretrained.dir:
             cfg = load_pretrained_model_cfg(cfg)
         logging.info(f"[*] Run ID {run_id}: seed={cfg.seed}, "

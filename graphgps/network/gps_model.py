@@ -1,3 +1,6 @@
+import copy
+import logging
+
 import torch
 import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.config import cfg
@@ -8,6 +11,38 @@ from torch_geometric.graphgym.register import register_network
 from graphgps.encoder.ER_edge_encoder import EREdgeEncoder
 
 from graphgps.layer.gps_layer import GPSLayer
+
+
+def _layer_ks(sparse_cfg, num_layers):
+    """Resolve per-layer k values from gt.sparse.* schedule config."""
+    schedule = getattr(sparse_cfg, 'k_schedule', 'constant') or 'constant'
+    k_default = int(sparse_cfg.k)
+    k_start = sparse_cfg.k_start if sparse_cfg.k_start is not None else k_default
+    k_end = sparse_cfg.k_end if sparse_cfg.k_end is not None else k_default
+    k_start, k_end = int(k_start), int(k_end)
+    k_min = max(1, int(getattr(sparse_cfg, 'k_min', 1)))
+    decay = float(getattr(sparse_cfg, 'k_decay', 0.5))
+
+    if num_layers <= 0:
+        return []
+    if schedule == 'constant' or num_layers == 1:
+        return [k_default] * num_layers
+    if schedule == 'linear':
+        if num_layers == 1:
+            return [k_start]
+        return [
+            max(k_min, int(round(k_start + (k_end - k_start) * i / (num_layers - 1))))
+            for i in range(num_layers)
+        ]
+    if schedule == 'exponential':
+        return [
+            max(k_min, int(round(k_start * (decay ** i))))
+            for i in range(num_layers)
+        ]
+    raise ValueError(
+        f"Unknown gt.sparse.k_schedule={schedule!r}; "
+        f"expected one of: constant, linear, exponential"
+    )
 
 
 class FeatureEncoder(torch.nn.Module):
@@ -79,8 +114,12 @@ class GPSModel(torch.nn.Module):
             local_gnn_type, global_model_type = cfg.gt.layer_type.split('+')
         except:
             raise ValueError(f"Unexpected layer type: {cfg.gt.layer_type}")
+        layer_ks = _layer_ks(cfg.gt.sparse, cfg.gt.layers)
+        logging.info(f"SparseAttention k schedule ({cfg.gt.sparse.k_schedule}): {layer_ks}")
         layers = []
-        for _ in range(cfg.gt.layers):
+        for layer_idx, k_layer in enumerate(layer_ks):
+            sparse_cfg = copy.deepcopy(cfg.gt.sparse)
+            sparse_cfg.k = int(k_layer)
             layers.append(GPSLayer(
                 dim_h=cfg.gt.dim_hidden,
                 local_gnn_type=local_gnn_type,
@@ -93,7 +132,7 @@ class GPSModel(torch.nn.Module):
                 layer_norm=cfg.gt.layer_norm,
                 batch_norm=cfg.gt.batch_norm,
                 bigbird_cfg=cfg.gt.bigbird,
-                sparse_cfg=cfg.gt.sparse,
+                sparse_cfg=sparse_cfg,
                 log_attn_weights=cfg.train.mode == 'log-attn-weights',
             ))
         self.layers = torch.nn.Sequential(*layers)

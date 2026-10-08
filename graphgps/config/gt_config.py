@@ -87,6 +87,16 @@ def set_cfg_gt(cfg):
 
     cfg.gt.sparse.k = 10
 
+    # Adaptive-k schedule across GPS layers:
+    #   constant — every layer uses gt.sparse.k
+    #   linear   — interpolate from k_start -> k_end over layers
+    #   exponential — k_l = max(k_min, round(k_start * decay**l))
+    cfg.gt.sparse.k_schedule = 'constant'
+    cfg.gt.sparse.k_start = None  # defaults to gt.sparse.k
+    cfg.gt.sparse.k_end = None    # defaults to gt.sparse.k
+    cfg.gt.sparse.k_decay = 0.5   # for exponential
+    cfg.gt.sparse.k_min = 1
+
     cfg.gt.sparse.random_attention = False
 
     cfg.gt.sparse.random_fraction = 0.1
