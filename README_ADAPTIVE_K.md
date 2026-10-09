@@ -45,7 +45,9 @@ Within epoch \(e\), **all layers** share \(k(e)\).
 | [`graphgps/network/gps_model.py`](graphgps/network/gps_model.py) | Builds layers with a shared init *k*; train loop updates it |
 | [`graphgps/config/gt_config.py`](graphgps/config/gt_config.py) | Schedule hyperparameters |
 
-Example (100 epochs, linear 45→5): epoch 0 → \(k=45\), epoch 99 → \(k=5\), every layer identical within that epoch.
+Research defaults to linear 50 to 10, with k_min=10 and the same requested k in all layers. Constant mode ignores adaptive settings.
+
+Current research datasets: PascalVOC-SP and Peptides-func. Full runs preserve paper-derived per-dataset training settings: PascalVOC-SP uses batch 50 / 200 epochs / hidden dimension 68; Peptides-func uses batch 200 / 250 epochs / hidden dimension 76. Both use 8 GPS layers and 4 heads; all other paper settings remain unchanged.
 
 ### 2.2 Engineering (Mac + free Colab)
 
@@ -59,7 +61,8 @@ Example (100 epochs, linear 45→5): epoch 0 → \(k=45\), epoch 99 → \(k=5\),
 
 | Path | Role |
 |---|---|
-| `configs/LRGB/Peptides-func/colab/GPS+kmip-*.yaml` | fixed / linear / exponential epoch curricula |
+| `configs/LRGB/{PascalVOC,Peptides-func}/defaults/GPS+kmip-linear-50-to-10.yaml` | Research: paper configs plus four linear schedule settings |
+| `configs/LRGB/Peptides-func/colab/GPS+kmip-exponential.yaml` | Existing exploratory exponential config |
 | `colab/Adaptive_k_MIP_Colab.ipynb` | Free-tier notebook (**clones this GitHub repo**) |
 | `colab/setup_env.sh` / `run_ablation.sh` | Env + ablation runner |
 
@@ -78,7 +81,7 @@ python main.py \
   wandb.use False accelerator cpu optim.max_epoch 2
 ```
 
-### Free Colab T4 — real ablation
+### Full research - paper-derived per-dataset training settings
 
 **Clone this repo** (has epoch-*k* + `colab/`). Do **not** clone the upstream paper repo.
 
@@ -92,16 +95,20 @@ https://github.com/ZoyaAnwar/adaptive-k-MIP-GraphGPS.git
 
 into `/content/kmip`, then runs setup → smoke → ablation.
 
-4. Epoch ladder: `MODE=quick` (20) → `MODE=standard` (100, resume) → optional `MODE=full` (250).
+4. Choose `DATASET=PascalVOC-SP` or `DATASET=Peptides-func`. PascalVOC-SP maps to the existing `configs/LRGB/PascalVOC/` directory.
+5. Start research with `MODE=full RUNS=linear`. Full mode does not override max_epoch or batch size. Resume with the same dataset, mode, config, seed and OUT_ROOT; keep max_epoch unchanged.
+6. `MODE=quick` (20 epochs) and `MODE=standard` (100 epochs) are independent short/debug and exploratory runs, respectively. They retain the selected config's batch size/model settings and never become earlier stages of a full run. The existing small `GPS+kmip-linear-k.yaml` remains a debug config.
 
 ```bash
 # on Colab, from /content/kmip
-MODE=standard RUNS=fixed,linear,exponential \
+DATASET=Peptides-func MODE=full RUNS=linear \
   OUT_ROOT=/content/drive/MyDrive/kmip_adaptive_k/results \
   bash colab/run_ablation.sh
 ```
 
-Results: `kmip_adaptive_k/results/{fixed,linear,exponential}/`.
+Results: `kmip_adaptive_k/results/<DATASET>/<MODE>/<RUN>/`.
+
+Fixed remains available using the unchanged selected paper config. The existing Peptides-func exponential config remains available unchanged as an exploratory run. Neither is launched by default. Other repository dataset support remains untouched and outside this research workflow.
 
 To refresh after a push: re-run the clone cell, or `!git -C /content/kmip pull`.
 
@@ -114,16 +121,16 @@ gt:
   sparse:
     k: 15                 # used when k_schedule: constant
     k_schedule: linear    # constant | linear | exponential  (over EPOCHS)
-    k_start: 45           # linear / exponential
-    k_end: 5              # linear only
+    k_start: 50           # linear research start
+    k_end: 10             # linear only
     k_decay: 0.7          # exponential only
-    k_min: 5              # floor
+    k_min: 10             # adaptive floor; ignored by constant mode
 ```
 
 Log each epoch:
 
 ```text
-Epoch 0/100: SparseAttention k=45 on 8 layer(s) (schedule=linear)
+epoch=0/249 progress=0.000 requested_k=50 on 8 layer(s) (schedule=linear)
 ```
 
 ---
@@ -138,7 +145,7 @@ graphgps/
   network/gps_model.py           # GPS layers (shared k)
   layer/sparse_attention_layer.py
   config/gt_config.py
-configs/LRGB/Peptides-func/colab/
+configs/LRGB/{PascalVOC,Peptides-func}/defaults/
 colab/                           # notebook clones GitHub
 ```
 
