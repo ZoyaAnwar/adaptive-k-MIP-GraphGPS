@@ -58,6 +58,7 @@ gt:
     k_schedule: linear
     k_start: 15
     k_end: 3
+    k_min: 1
     kq_dim: 8
     val_dim: 16
     head_agg: none

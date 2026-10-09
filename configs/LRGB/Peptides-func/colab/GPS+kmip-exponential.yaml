@@ -1,4 +1,4 @@
-# Free-tier Colab: exponential adaptive-k (high -> low)
+# Free-tier Colab: exponential epoch curriculum (k_start * decay^epoch; same k all layers)
 out_dir: results/colab
 metric_best: ap
 wandb:

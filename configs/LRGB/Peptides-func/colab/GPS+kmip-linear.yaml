@@ -1,4 +1,4 @@
-# Free-tier Colab: linear adaptive-k (high -> low)
+# Free-tier Colab: linear epoch curriculum (k 45 -> 5 over epochs; same k all layers)
 out_dir: results/colab
 metric_best: ap
 wandb:

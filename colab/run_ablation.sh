@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run fixed / linear / exponential adaptive-k on Peptides-func.
+# Run fixed / linear / exponential epoch-wise adaptive-k on Peptides-func.
+# (Same k for all layers within an epoch; k anneals over epochs.)
 #
 # Usage (from repo root on Colab):
 #   bash colab/run_ablation.sh                 # all three, 100 epochs (config default)

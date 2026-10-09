@@ -1,4 +1,4 @@
-# Free-tier Colab baseline: fixed k (paper-style constant sparsification)
+# Free-tier Colab baseline: fixed k every epoch (paper-style constant sparsification)
 out_dir: results/colab
 metric_best: ap
 wandb:
