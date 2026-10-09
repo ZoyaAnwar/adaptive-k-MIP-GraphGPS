@@ -20,11 +20,12 @@ RUNS="${RUNS:-linear}"
 OUT_ROOT="${OUT_ROOT:-$ROOT/results/colab}"
 SEED="${SEED:-0}"
 
+REQUIRE_KEOPS=0
 MODE_ARGS=()
 case "$MODE" in
   quick)    MODE_ARGS=(optim.max_epoch 20) ;;
   standard) MODE_ARGS=(optim.max_epoch 100) ;;
-  full)     ;;  # No epoch or batch-size override; use the selected config.
+  full)     REQUIRE_KEOPS=1 ;;  # Keep config settings; require KeOps/CUDA.
   *) echo "Unknown MODE=$MODE (use quick|standard|full)"; exit 1 ;;
 esac
 
@@ -64,7 +65,7 @@ for name in "${RUN_LIST[@]}"; do
   echo ""
   echo "======== RUN $name ========"
   echo "cfg=$cfg  out_dir=$run_out"
-  python main.py \
+  KMIP_REQUIRE_KEOPS="$REQUIRE_KEOPS" python main.py \
     --cfg "$cfg" \
     --repeat 1 \
     wandb.use False \

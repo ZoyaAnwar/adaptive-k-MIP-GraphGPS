@@ -1,7 +1,9 @@
 import copy
+import json
 import logging
 import time
 import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -276,6 +278,70 @@ def eval_epoch(logger, loader, model, split='val'):
         time_start = time.time()
 
 
+def _restore_perf_history(loggers, start_epoch):
+    """Restore the checkpoint's metric prefix and discard epochs to be replayed."""
+    perf = [[] for _ in loggers]
+    if start_epoch == 0:
+        return perf
+
+    histories = []
+    for split_index, logger in enumerate(loggers):
+        path = Path(logger.out_dir) / 'stats.json'
+        if not path.is_file():
+            raise RuntimeError(f"Cannot resume: missing metric history {path}")
+        text = path.read_text(encoding='utf-8')
+        lines = text.splitlines()
+        by_epoch = {}
+        for line_index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                # A killed process may leave an unfinished final JSON record.
+                if line_index == len(lines) - 1 and not text.endswith('\n'):
+                    break
+                raise RuntimeError(f"Cannot resume: invalid history {path}") from error
+            if record['epoch'] < start_epoch:
+                epoch = record['epoch']
+                if epoch in by_epoch and by_epoch[epoch] != record:
+                    raise RuntimeError(
+                        f"Cannot resume: conflicting metrics for epoch {epoch} in {path}"
+                    )
+                by_epoch[epoch] = record
+
+        expected = {epoch for epoch in range(start_epoch)
+                    if split_index == 0 or is_eval_epoch(epoch)}
+        if set(by_epoch) != expected:
+            raise RuntimeError(
+                f"Cannot resume: metric history does not match checkpoint in {path}"
+            )
+        metric = 'loss' if cfg.metric_best == 'auto' else cfg.metric_best
+        if any('loss' not in record or
+               (split_index > 0 and metric not in record)
+               for record in by_epoch.values()):
+            raise RuntimeError(f"Cannot resume: missing selection metrics in {path}")
+
+        latest = None
+        for epoch in range(start_epoch):
+            if epoch in by_epoch:
+                latest = by_epoch[epoch]
+            if latest is None:
+                raise RuntimeError(f"Cannot resume: missing initial metrics in {path}")
+            perf[split_index].append(latest)
+        histories.append((path, by_epoch))
+
+    # Validate all splits before replacing any file. Keep one record per epoch,
+    # so GraphGym's first-occurrence reader cannot select an abandoned replay.
+    for path, by_epoch in histories:
+        temporary = path.with_suffix('.json.tmp')
+        with temporary.open('w', encoding='utf-8') as stream:
+            for epoch in sorted(by_epoch):
+                stream.write(json.dumps(by_epoch[epoch]) + '\n')
+        temporary.replace(path)
+    return perf
+
+
 @register_train('custom')
 def custom_train(loggers, loaders, model, optimizer, scheduler):
     """
@@ -314,7 +380,7 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
     num_splits = len(loggers)
     split_names = ['val', 'test']
     full_epoch_times = []
-    perf = [[] for _ in range(num_splits)]
+    perf = _restore_perf_history(loggers, start_epoch)
     for cur_epoch in range(start_epoch, cfg.optim.max_epoch):
         set_epoch_k(model, cfg.gt.sparse, cur_epoch, cfg.optim.max_epoch)
         start_time = time.perf_counter()
@@ -346,42 +412,44 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
 
         # Log current best stats on eval epoch.
         if is_eval_epoch(cur_epoch):
-            best_epoch = np.array([vp['loss'] for vp in val_perf]).argmin()
+            best_index = np.array([vp['loss'] for vp in val_perf]).argmin()
+            best_epoch = val_perf[best_index]['epoch']
             best_train = best_val = best_test = ""
             if cfg.metric_best != 'auto':
                 # Select again based on val perf of `cfg.metric_best`.
                 m = cfg.metric_best
-                best_epoch = getattr(np.array([vp[m] for vp in val_perf]),
+                best_index = getattr(np.array([vp[m] for vp in val_perf]),
                                      cfg.metric_agg)()
-                if m in perf[0][best_epoch]:
-                    best_train = f"train_{m}: {perf[0][best_epoch][m]:.4f}"
+                best_epoch = val_perf[best_index]['epoch']
+                if m in perf[0][best_index]:
+                    best_train = f"train_{m}: {perf[0][best_index][m]:.4f}"
                 else:
                     # Note: For some datasets it is too expensive to compute
                     # the main metric on the training set.
                     best_train = f"train_{m}: {0:.4f}"
-                best_val = f"val_{m}: {perf[1][best_epoch][m]:.4f}"
-                best_test = f"test_{m}: {perf[2][best_epoch][m]:.4f}"
+                best_val = f"val_{m}: {perf[1][best_index][m]:.4f}"
+                best_test = f"test_{m}: {perf[2][best_index][m]:.4f}"
 
                 if cfg.wandb.use:
                     bstats = {"best/epoch": best_epoch}
                     for i, s in enumerate(['train', 'val', 'test']):
-                        bstats[f"best/{s}_loss"] = perf[i][best_epoch]['loss']
-                        if m in perf[i][best_epoch]:
-                            bstats[f"best/{s}_{m}"] = perf[i][best_epoch][m]
+                        bstats[f"best/{s}_loss"] = perf[i][best_index]['loss']
+                        if m in perf[i][best_index]:
+                            bstats[f"best/{s}_{m}"] = perf[i][best_index][m]
                             run.summary[f"best_{s}_perf"] = \
-                                perf[i][best_epoch][m]
+                                perf[i][best_index][m]
                         for x in ['hits@1', 'hits@3', 'hits@10', 'mrr']:
-                            if x in perf[i][best_epoch]:
-                                bstats[f"best/{s}_{x}"] = perf[i][best_epoch][x]
+                            if x in perf[i][best_index]:
+                                bstats[f"best/{s}_{x}"] = perf[i][best_index][x]
                         for x in ['hits@1_filt', 'hits@3_filt', 'hits@10_filt', 'mrr_filt']:
-                            if x in perf[i][best_epoch]:
-                                bstats[f"best/{s}_{x}"] = perf[i][best_epoch][x]
+                            if x in perf[i][best_index]:
+                                bstats[f"best/{s}_{x}"] = perf[i][best_index][x]
                         for x in ['hits@1_filt_self', 'hits@3_filt_self', 'hits@10_filt_self', 'mrr_filt_self']:
-                            if x in perf[i][best_epoch]:
-                                bstats[f"best/{s}_{x}"] = perf[i][best_epoch][x]
+                            if x in perf[i][best_index]:
+                                bstats[f"best/{s}_{x}"] = perf[i][best_index][x]
                         for x in ['dirichlet', 'mad', 'emb_norm']:
-                            if x in perf[i][best_epoch]:
-                                bstats[f"best/{s}_{x}"] = perf[i][best_epoch][x]
+                            if x in perf[i][best_index]:
+                                bstats[f"best/{s}_{x}"] = perf[i][best_index][x]
                     run.log(bstats, step=cur_epoch)
                     run.summary["full_epoch_time_avg"] = np.mean(full_epoch_times)
                     run.summary["full_epoch_time_sum"] = np.sum(full_epoch_times)
@@ -395,9 +463,9 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
                 f"> Epoch {cur_epoch}: took {full_epoch_times[-1]:.1f}s "
                 f"(avg {np.mean(full_epoch_times):.1f}s) | "
                 f"Best so far: epoch {best_epoch}\t"
-                f"train_loss: {perf[0][best_epoch]['loss']:.4f} {best_train}\t"
-                f"val_loss: {perf[1][best_epoch]['loss']:.4f} {best_val}\t"
-                f"test_loss: {perf[2][best_epoch]['loss']:.4f} {best_test}"
+                f"train_loss: {perf[0][best_index]['loss']:.4f} {best_train}\t"
+                f"val_loss: {perf[1][best_index]['loss']:.4f} {best_val}\t"
+                f"test_loss: {perf[2][best_index]['loss']:.4f} {best_test}"
             )
             if hasattr(model, 'trf_layers'):
                 # Log SAN's gamma parameter values if they are trainable.

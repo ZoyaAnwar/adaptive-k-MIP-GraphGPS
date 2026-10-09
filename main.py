@@ -33,6 +33,28 @@ from graphgps.logger import create_logger
 from graphgps.utils import my_create_loader
 
 
+def require_keops_for_research(model):
+    """Reject fallback/CPU SparseAttention once, before full research training."""
+    from graphgps.layer.sparse_attention_layer import SparseAttention
+
+    layers = [(name, layer) for name, layer in model.named_modules()
+              if isinstance(layer, SparseAttention)]
+    invalid = []
+    for name, layer in layers:
+        parameters = list(layer.parameters())
+        if (not layer.use_keops or not parameters or
+                any(parameter.device.type != 'cuda' for parameter in parameters)):
+            invalid.append(name or '<root>')
+    if not torch.cuda.is_available() or not layers or invalid:
+        raise RuntimeError(
+            "MODE=full research runs require PyKeOps SparseAttention on CUDA "
+            "for paper comparability; dense fallback is not permitted. "
+            "Install working PyKeOps/CUDA and place every SparseAttention layer "
+            "on CUDA. Use MODE=quick or MODE=standard for fallback debugging. "
+            f"Invalid layers: {invalid}; SparseAttention layers found: {len(layers)}."
+        )
+
+
 def new_optimizer_config(cfg):
     return OptimizerConfig(optimizer=cfg.optim.optimizer,
                            base_lr=cfg.optim.base_lr,
@@ -228,6 +250,8 @@ if __name__ == '__main__':
                 model, cfg.pretrained.dir, cfg.pretrained.freeze_main,
                 cfg.pretrained.reset_prediction_head, seed=cfg.pretrained.seed
             )
+        if os.environ.get('KMIP_REQUIRE_KEOPS') == '1':
+            require_keops_for_research(model)
         optimizer = create_optimizer(model.parameters(),
                                      new_optimizer_config(cfg))
         scheduler = create_scheduler(optimizer, new_scheduler_config(cfg))
