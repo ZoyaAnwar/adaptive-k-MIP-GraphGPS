@@ -19,6 +19,8 @@ def k_for_epoch(sparse_cfg, epoch: int, max_epoch: int) -> int:
     """
     schedule = getattr(sparse_cfg, 'k_schedule', 'constant') or 'constant'
     k_default = int(sparse_cfg.k)
+    if schedule == 'constant':
+        return k_default
     k_start = sparse_cfg.k_start if sparse_cfg.k_start is not None else k_default
     k_end = sparse_cfg.k_end if sparse_cfg.k_end is not None else k_default
     k_start, k_end = int(k_start), int(k_end)
@@ -29,8 +31,6 @@ def k_for_epoch(sparse_cfg, epoch: int, max_epoch: int) -> int:
         return max(k_min, k_default)
     epoch = int(min(max(epoch, 0), max(max_epoch - 1, 0)))
 
-    if schedule == 'constant':
-        return max(k_min, k_default)
     if schedule == 'linear':
         if max_epoch == 1:
             return max(k_min, k_start)
@@ -60,9 +60,11 @@ def set_epoch_k(model: nn.Module, sparse_cfg, epoch: int, max_epoch: int) -> int
     k = k_for_epoch(sparse_cfg, epoch, max_epoch)
     n = apply_k_to_model(model, k)
     if n:
+        progress = min(max(epoch, 0), max(max_epoch - 1, 0)) / max(max_epoch - 1, 1)
         logging.info(
-            'Epoch %s/%s: SparseAttention k=%s on %s layer(s) '
+            'epoch=%s/%s progress=%.3f requested_k=%s on %s layer(s) '
             '(schedule=%s)',
-            epoch, max_epoch, k, n, getattr(sparse_cfg, 'k_schedule', 'constant'),
+            epoch, max(max_epoch - 1, 0), progress, k, n,
+            getattr(sparse_cfg, 'k_schedule', 'constant'),
         )
     return k
