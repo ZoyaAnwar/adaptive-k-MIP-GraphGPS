@@ -1,12 +1,10 @@
 import os
 import os.path as osp
 import shutil
-import pickle
 
 import torch
-from tqdm import tqdm
-from torch_geometric.data import (InMemoryDataset, Data, download_url,
-                                  extract_zip)
+from torch_geometric.data import InMemoryDataset, download_url
+from torch_geometric.data.separate import separate
 
 
 class VOCSuperpixels(InMemoryDataset):
@@ -70,18 +68,10 @@ class VOCSuperpixels(InMemoryDataset):
             final dataset. (default: :obj:`None`)
     """
     
-    url = {
-        10: {
-        'edge_wt_only_coord': 'https://www.dropbox.com/s/rk6pfnuh7tq3t37/voc_superpixels_edge_wt_only_coord.zip?dl=1',
-        'edge_wt_coord_feat': 'https://www.dropbox.com/s/2a53nmfp6llqg8y/voc_superpixels_edge_wt_coord_feat.zip?dl=1',
-        'edge_wt_region_boundary': 'https://www.dropbox.com/s/6pfz2mccfbkj7r3/voc_superpixels_edge_wt_region_boundary.zip?dl=1'
-        },
-        30: {
-        'edge_wt_only_coord': 'https://www.dropbox.com/s/toqulkdpb1jrswk/voc_superpixels_edge_wt_only_coord.zip?dl=1',
-        'edge_wt_coord_feat': 'https://www.dropbox.com/s/xywki8ysj63584d/voc_superpixels_edge_wt_coord_feat.zip?dl=1',
-        'edge_wt_region_boundary': 'https://www.dropbox.com/s/8x722ai272wqwl4/voc_superpixels_edge_wt_region_boundary.zip?dl=1'
-        }
-    }
+    # The original LRGB Dropbox links are disabled; the LRGB authors mirror the
+    # already-collated (data, slices) splits on Hugging Face.
+    hf_url = ('https://huggingface.co/datasets/LRGB/'
+              'voc_superpixels_{name}_{slic_compactness}/resolve/main/{split}.pt')
 
     def __init__(self, root, name='edge_wt_region_boundary', slic_compactness=30, split='train',
                  transform=None, pre_transform=None, pre_filter=None):
@@ -98,7 +88,7 @@ class VOCSuperpixels(InMemoryDataset):
     
     @property
     def raw_file_names(self):
-        return ['train.pickle', 'val.pickle', 'test.pickle']
+        return ['train.pt', 'val.pt', 'test.pt']
 
     @property
     def raw_dir(self):
@@ -119,52 +109,35 @@ class VOCSuperpixels(InMemoryDataset):
         return ['train.pt', 'val.pt', 'test.pt']
 
     def download(self):
-        shutil.rmtree(self.raw_dir)
-        path = download_url(self.url[self.slic_compactness][self.name], self.root)
-        extract_zip(path, self.root)
-        os.rename(osp.join(self.root, 'voc_superpixels_' + self.name), self.raw_dir)
-        os.unlink(path)
-    
-    def process(self):
         for split in ['train', 'val', 'test']:
-            with open(osp.join(self.raw_dir, f'{split}.pickle'), 'rb') as f:
-                graphs = pickle.load(f)
+            # Raw files are moved into processed_dir, so skip splits already there.
+            if osp.exists(osp.join(self.processed_dir, f'{split}.pt')):
+                continue
+            url = self.hf_url.format(name=self.name,
+                                     slic_compactness=self.slic_compactness,
+                                     split=split)
+            download_url(url, self.raw_dir)
 
-            indices = range(len(graphs))
+    def process(self):
+        from graphgps.loader.torch_io import torch_load
+        for split in ['train', 'val', 'test']:
+            raw_path = osp.join(self.raw_dir, f'{split}.pt')
+            processed_path = osp.join(self.processed_dir, f'{split}.pt')
+            if osp.exists(processed_path):
+                continue
+            if self.pre_filter is None and self.pre_transform is None:
+                shutil.move(raw_path, processed_path)
+                continue
 
-            pbar = tqdm(total=len(indices))
-            pbar.set_description(f'Processing {split} dataset')
-
+            data, slices = torch_load(raw_path)
             data_list = []
-            for idx in indices:
-                graph = graphs[idx] 
-                
-                """
-                Each `graph` is a tuple (x, edge_attr, edge_index, y)
-                    Shape of x : [num_nodes, 14]
-                    Shape of edge_attr : [num_edges, 1] or [num_edges, 2]
-                    Shape of edge_index : [2, num_edges]
-                    Shape of y : [num_nodes]
-                """
-                
-                x = graph[0].to(torch.float)
-                edge_attr = graph[1].to(torch.float)
-                edge_index = graph[2]
-                y = torch.LongTensor(graph[3])
-
-                data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr,
-                            y=y)
-
-                if self.pre_filter is not None and not self.pre_filter(data):
+            for idx in range(len(slices['x']) - 1):
+                graph = separate(cls=data.__class__, batch=data, idx=idx,
+                                 slice_dict=slices, decrement=False)
+                if self.pre_filter is not None and not self.pre_filter(graph):
                     continue
-
                 if self.pre_transform is not None:
-                    data = self.pre_transform(data)
-
-                data_list.append(data)
-                pbar.update(1)
-
-            pbar.close()
-
-            torch.save(self.collate(data_list),
-                       osp.join(self.processed_dir, f'{split}.pt'))
+                    graph = self.pre_transform(graph)
+                data_list.append(graph)
+            torch.save(self.collate(data_list), processed_path)
+            os.unlink(raw_path)
