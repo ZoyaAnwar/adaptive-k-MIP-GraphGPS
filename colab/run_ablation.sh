@@ -7,6 +7,7 @@
 #   DATASET=PascalVOC-SP bash colab/run_ablation.sh
 #   MODE=quick bash colab/run_ablation.sh      # independent 20-epoch short/debug run
 #   MODE=standard bash colab/run_ablation.sh   # independent 100-epoch exploratory
+#   SEEDS=1 bash colab/run_ablation.sh         # one seed only
 #   RUNS=fixed,linear bash colab/run_ablation.sh
 #   OUT_ROOT=/content/drive/MyDrive/kmip_runs bash colab/run_ablation.sh
 set -euo pipefail
@@ -18,7 +19,22 @@ DATASET="${DATASET:-Peptides-func}"
 MODE="${MODE:-full}"   # quick | standard | full
 RUNS="${RUNS:-linear}"
 OUT_ROOT="${OUT_ROOT:-$ROOT/results/colab}"
-SEED="${SEED:-0}"
+SEEDS="${SEEDS:-0,1,2}"
+
+# Explicit seeds; each gets one independent Python process.
+if [[ ! "$SEEDS" =~ ^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))*$ ]]; then
+  echo "Invalid SEEDS=$SEEDS (use comma-separated nonnegative integers)"
+  exit 1
+fi
+IFS=',' read -r -a SEED_LIST <<< "$SEEDS"
+declare -A SEEN_SEEDS=()
+for seed in "${SEED_LIST[@]}"; do
+  if [[ -n "${SEEN_SEEDS[$seed]:-}" ]]; then
+    echo "Duplicate seed=$seed in SEEDS=$SEEDS"
+    exit 1
+  fi
+  SEEN_SEEDS[$seed]=1
+done
 
 REQUIRE_KEOPS=0
 MODE_ARGS=()
@@ -31,7 +47,7 @@ esac
 
 mkdir -p "$OUT_ROOT"
 echo "ROOT=$ROOT"
-echo "OUT_ROOT=$OUT_ROOT  DATASET=$DATASET  MODE=$MODE  RUNS=$RUNS"
+echo "OUT_ROOT=$OUT_ROOT  DATASET=$DATASET  MODE=$MODE  RUNS=$RUNS  SEEDS=$SEEDS"
 
 case "$DATASET" in
   Peptides-func) CONFIG_DATASET=Peptides-func ;;
@@ -65,18 +81,22 @@ for name in "${RUN_LIST[@]}"; do
   echo ""
   echo "======== RUN $name ========"
   echo "cfg=$cfg  out_dir=$run_out"
-  KMIP_REQUIRE_KEOPS="$REQUIRE_KEOPS" python main.py \
-    --cfg "$cfg" \
-    --repeat 1 \
-    wandb.use False \
-    seed "$SEED" \
-    "${MODE_ARGS[@]}" \
-    out_dir "$run_out" \
-    train.auto_resume True \
-    train.enable_ckpt True \
-    train.ckpt_best True \
-    name_tag "$name" \
-    2>&1 | tee -a "$run_out/train_${name}.log"
+  for seed in "${SEED_LIST[@]}"; do
+    echo "-------- seed=$seed (repeat=1) --------"
+    KMIP_REQUIRE_KEOPS="$REQUIRE_KEOPS" python main.py \
+      --cfg "$cfg" \
+      --repeat 1 \
+      wandb.use False \
+      seed "$seed" \
+      "${MODE_ARGS[@]}" \
+      out_dir "$run_out" \
+      train.auto_resume True \
+      train.enable_ckpt True \
+      train.ckpt_best True \
+      name_tag "$name" \
+      2>&1 | tee -a "$run_out/train_${name}_seed${seed}.log"
+    echo "Finished $name seed=$seed"
+  done
   echo "Finished $name"
 done
 
