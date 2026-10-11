@@ -92,7 +92,8 @@ class VOCSuperpixels(InMemoryDataset):
         assert slic_compactness in [10, 30]
         super().__init__(root, transform, pre_transform, pre_filter)
         path = osp.join(self.processed_dir, f'{split}.pt')
-        self.data, self.slices = torch.load(path)
+        from graphgps.loader.torch_io import torch_load
+        self.data, self.slices = torch_load(path)
         
     
     @property
