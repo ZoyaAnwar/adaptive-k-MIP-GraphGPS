@@ -91,11 +91,11 @@ def set_cfg_gt(cfg):
     # Within an epoch, every GPS layer uses the same k.
     #   constant    — always gt.sparse.k
     #   linear      — interpolate k_start -> k_end over epochs
-    #   exponential — k(e) = max(k_min, round(k_start * decay**e))
+    #   exponential — geometric k_start -> k_end over the full training duration
     cfg.gt.sparse.k_schedule = 'constant'
-    cfg.gt.sparse.k_start = None  # defaults to gt.sparse.k
-    cfg.gt.sparse.k_end = None    # defaults to gt.sparse.k
-    cfg.gt.sparse.k_decay = 0.5   # for exponential
+    cfg.gt.sparse.k_start = None  # exponential: 50; linear: gt.sparse.k
+    cfg.gt.sparse.k_end = None    # exponential: 10; linear: gt.sparse.k
+    cfg.gt.sparse.k_decay = 0.5   # legacy key; endpoint-based exponential ignores it
     cfg.gt.sparse.k_min = 1
 
     cfg.gt.sparse.random_attention = False

@@ -34,7 +34,7 @@ to mitigate supervision starvation. **That curriculum is what we implement.**
 |---|---|---|
 | `constant` | \(k(e)=k\) (paper default) | `gt.sparse.k_schedule: constant` |
 | `linear` | interpolate `k_start` → `k_end` over epochs | `k_schedule: linear` |
-| `exponential` | \(\max(k_{\min}, \mathrm{round}(k_{\mathrm{start}} \cdot \mathrm{decay}^{e}))\) | `k_schedule: exponential` |
+| `exponential` | \(\mathrm{round}(k_{\mathrm{start}}(k_{\mathrm{end}}/k_{\mathrm{start}})^{e/(E-1)})\), subject to `k_min` | `k_schedule: exponential` |
 
 Within epoch \(e\), **all layers** share \(k(e)\).
 
@@ -46,6 +46,16 @@ Within epoch \(e\), **all layers** share \(k(e)\).
 | [`graphgps/config/gt_config.py`](graphgps/config/gt_config.py) | Schedule hyperparameters |
 
 Research defaults to linear 50 to 10, with k_min=10 and the same requested k in all layers. Constant mode ignores adaptive settings.
+
+Exponential mode defaults to **50 to 10** across the full `optim.max_epoch` duration, reaching 10 at the final epoch. Explicit `k_start` and `k_end` take precedence; both must be positive. The existing `k_min` floor still applies. With one epoch, the schedule uses `k_start`. The legacy `k_decay` key is accepted but ignored. Linear mode retains its existing defaults (`gt.sparse.k` for omitted endpoints).
+
+Select exponential decay through YAML (`gt.sparse.k_schedule: exponential`) or CLI overrides:
+
+```bash
+python main.py --cfg configs/LRGB/Peptides-func/defaults/GPS+kmip-linear-50-to-10.yaml gt.sparse.k_schedule exponential
+```
+
+Run the lightweight checks with `python -m unittest discover -s tests -p "test_k_schedule.py"`.
 
 Current research datasets: PascalVOC-SP and Peptides-func. Full runs preserve paper-derived per-dataset training settings: PascalVOC-SP uses batch 50 / 200 epochs / hidden dimension 68; Peptides-func uses batch 200 / 250 epochs / hidden dimension 76. Both use 8 GPS layers and 4 heads; all other paper settings remain unchanged.
 
@@ -108,7 +118,7 @@ DATASET=Peptides-func MODE=full RUNS=linear \
 
 Results: `kmip_adaptive_k/results/<DATASET>/<MODE>/<RUN>/`.
 
-Fixed remains available using the unchanged selected paper config. The existing Peptides-func exponential config remains available unchanged as an exploratory run. Neither is launched by default. Other repository dataset support remains untouched and outside this research workflow.
+Fixed remains available using the unchanged selected paper config. The existing Peptides-func exponential config remains an exploratory run; its explicit start of 45 takes precedence and now decays geometrically to the default endpoint of 10. Neither is launched by default. Other repository dataset support remains untouched and outside this research workflow.
 
 To refresh after a push: re-run the clone cell, or `!git -C /content/kmip pull`.
 
@@ -121,9 +131,9 @@ gt:
   sparse:
     k: 15                 # used when k_schedule: constant
     k_schedule: linear    # constant | linear | exponential  (over EPOCHS)
-    k_start: 50           # linear research start
-    k_end: 10             # linear only
-    k_decay: 0.7          # exponential only
+    k_start: 50           # explicit start for linear or exponential
+    k_end: 10             # explicit endpoint for linear or exponential
+    k_decay: 0.7          # legacy key, accepted but ignored
     k_min: 10             # adaptive floor; ignored by constant mode
 ```
 
