@@ -60,9 +60,11 @@ declare -A CFG=(
   [fixed]="$CONFIG_DIR/GPS+kmip.yaml"
   [linear]="$CONFIG_DIR/GPS+kmip-linear-50-to-10.yaml"
 )
-# Keep the existing Peptides-func exponential config available unchanged.
-# It is exploratory and outside the current linear research workflow.
-if [[ "$DATASET" == "Peptides-func" ]]; then
+# PascalVOC-SP: exponential 50 -> 10, otherwise identical to the linear config.
+# Peptides-func: keep the existing exploratory exponential config unchanged.
+if [[ "$DATASET" == "PascalVOC-SP" ]]; then
+  CFG[exponential]="$CONFIG_DIR/GPS+kmip-exponential-50-to-10.yaml"
+elif [[ "$DATASET" == "Peptides-func" ]]; then
   CFG[exponential]=configs/LRGB/Peptides-func/colab/GPS+kmip-exponential.yaml
 fi
 
@@ -73,7 +75,7 @@ for name in "${RUN_LIST[@]}"; do
   name="$(echo "$name" | xargs)"
   cfg="${CFG[$name]:-}"
   if [[ -z "$cfg" ]]; then
-    echo "Unsupported run=$name for DATASET=$DATASET (exponential: Peptides-func only)"
+    echo "Unsupported run=$name for DATASET=$DATASET (exponential: PascalVOC-SP or Peptides-func)"
     exit 1
   fi
   run_out="$OUT_ROOT/$DATASET/$MODE/$name"
