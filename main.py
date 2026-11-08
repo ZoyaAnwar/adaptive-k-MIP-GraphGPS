@@ -84,7 +84,14 @@ def custom_set_out_dir(cfg, cfg_fname, name_tag):
     """
     run_name = os.path.splitext(os.path.basename(cfg_fname))[0]
     run_name += f"-{name_tag}" if name_tag else ""
+    if cfg.gt.sparse.k_schedule == 'adaptive_mass':
+        cfg.out_dir = os.path.join(cfg.out_dir, 'adaptive_mass')
     cfg.out_dir = os.path.join(cfg.out_dir, run_name)
+    if cfg.gt.sparse.k_schedule == 'adaptive_mass':
+        from graphgps.adaptive_k.run_identity import guard_run_directory, mark_run_directory
+        guard_run_directory(cfg.out_dir)
+        os.makedirs(cfg.out_dir, exist_ok=True)
+        mark_run_directory(cfg.out_dir)
 
 
 def custom_set_run_dir(cfg, run_id):
@@ -95,11 +102,17 @@ def custom_set_run_dir(cfg, run_id):
         run_id (int): Main for-loop iter id (the random seed or dataset split)
     """
     cfg.run_dir = os.path.join(cfg.out_dir, str(run_id))
+    adaptive_mass = cfg.gt.sparse.k_schedule == 'adaptive_mass'
+    if adaptive_mass:
+        from graphgps.adaptive_k.run_identity import guard_run_directory, mark_run_directory
+        guard_run_directory(cfg.run_dir)
     # Make output directory
     if cfg.train.auto_resume:
         os.makedirs(cfg.run_dir, exist_ok=True)
     else:
         makedirs_rm_exist(cfg.run_dir)
+    if adaptive_mass:
+        mark_run_directory(cfg.run_dir)
 
 
 def run_loop_settings():

@@ -22,6 +22,10 @@ def k_for_epoch(sparse_cfg, epoch: int, max_epoch: int) -> int:
     k_default = int(sparse_cfg.k)
     if schedule == 'constant':
         return k_default
+    if schedule == 'adaptive_mass':
+        if getattr(sparse_cfg, 'random_attention', False):
+            raise ValueError('adaptive_mass rejects random_attention=True')
+        return 50  # Initial/reference budget; MassCalibration manages later epochs.
     default_start = 50 if schedule == 'exponential' else k_default
     default_end = 10 if schedule == 'exponential' else k_default
     k_start = sparse_cfg.k_start if sparse_cfg.k_start is not None else default_start
@@ -45,7 +49,7 @@ def k_for_epoch(sparse_cfg, epoch: int, max_epoch: int) -> int:
         return max(k_min, int(round(k_start * (k_end / k_start) ** t)))
     raise ValueError(
         f"Unknown gt.sparse.k_schedule={schedule!r}; "
-        f"expected one of: constant, linear, exponential"
+        f"expected one of: constant, linear, exponential, adaptive_mass"
     )
 
 

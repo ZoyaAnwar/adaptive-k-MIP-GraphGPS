@@ -59,6 +59,7 @@ CONFIG_DIR="configs/LRGB/$CONFIG_DATASET/defaults"
 declare -A CFG=(
   [fixed]="$CONFIG_DIR/GPS+kmip.yaml"
   [linear]="$CONFIG_DIR/GPS+kmip-linear-50-to-10.yaml"
+  [adaptive_mass]="$CONFIG_DIR/GPS+kmip-linear-50-to-10.yaml"
 )
 # PascalVOC-SP: exponential 50 -> 10, otherwise identical to the linear config.
 # Peptides-func: keep the existing exploratory exponential config unchanged.
@@ -78,6 +79,10 @@ for name in "${RUN_LIST[@]}"; do
     echo "Unsupported run=$name for DATASET=$DATASET (exponential: PascalVOC-SP or Peptides-func)"
     exit 1
   fi
+  RUN_ARGS=()
+  if [[ "$name" == "adaptive_mass" ]]; then
+    RUN_ARGS=(gt.sparse.k_schedule adaptive_mass)
+  fi
   run_out="$OUT_ROOT/$DATASET/$MODE/$name"
   mkdir -p "$run_out"
   echo ""
@@ -91,6 +96,7 @@ for name in "${RUN_LIST[@]}"; do
       wandb.use False \
       seed "$seed" \
       "${MODE_ARGS[@]}" \
+      "${RUN_ARGS[@]}" \
       out_dir "$run_out" \
       train.auto_resume True \
       train.enable_ckpt True \

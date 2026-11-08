@@ -109,7 +109,11 @@ class GPSLayer(nn.Module):
                 sparse_cfg.kq_dim = dim_h
             if sparse_cfg.val_dim is None:
                 sparse_cfg.val_dim = dim_h
-            self.self_attn = SparseAttention(
+            attention_class = SparseAttention
+            if sparse_cfg.k_schedule == 'adaptive_mass':
+                from graphgps.adaptive_k.checkpoint_attention import MassSparseAttention
+                attention_class = MassSparseAttention
+            self.self_attn = attention_class(
                 dim=dim_h, kq_dim=sparse_cfg.kq_dim, val_dim=sparse_cfg.val_dim,
                 num_heads=num_heads, k=sparse_cfg.k,
                 head_agg=sparse_cfg.head_agg,

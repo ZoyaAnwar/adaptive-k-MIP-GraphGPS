@@ -380,10 +380,27 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
     num_splits = len(loggers)
     split_names = ['val', 'test']
     full_epoch_times = []
+    mass_calibration = None
+    if cfg.gt.sparse.k_schedule == 'adaptive_mass':
+        from graphgps.adaptive_k.mass_calibration import MassCalibration
+        if cfg.dataset.task != 'graph' or cfg.train.sampler != 'full_batch':
+            raise ValueError('adaptive_mass requires a full_batch graph training dataset')
+        mass_calibration = MassCalibration(
+            model, cfg.gt.sparse, loaders[0].dataset, cfg.run_dir,
+            cfg.seed, cfg.optim.max_epoch, start_epoch)
     perf = _restore_perf_history(loggers, start_epoch)
     for cur_epoch in range(start_epoch, cfg.optim.max_epoch):
-        set_epoch_k(model, cfg.gt.sparse, cur_epoch, cfg.optim.max_epoch)
-        start_time = time.perf_counter()
+        if mass_calibration is None:
+            set_epoch_k(model, cfg.gt.sparse, cur_epoch, cfg.optim.max_epoch)
+            start_time = time.perf_counter()
+        else:
+            # Include calibration and archive I/O in total epoch runtime.
+            start_time = time.perf_counter()
+            calibration_stats = mass_calibration.step(cur_epoch)
+            if cfg.wandb.use and calibration_stats is not None:
+                run.log({f'calibration/{key}': value
+                         for key, value in calibration_stats.items()
+                         if isinstance(value, (int, float))}, step=cur_epoch)
         train_epoch(loggers[0], loaders[0], model, optimizer, scheduler,
                     cfg.optim.batch_accumulation)
         perf[0].append(loggers[0].write_epoch(cur_epoch))

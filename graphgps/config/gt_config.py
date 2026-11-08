@@ -98,6 +98,16 @@ def set_cfg_gt(cfg):
     cfg.gt.sparse.k_decay = 0.5   # legacy key; endpoint-based exponential ignores it
     cfg.gt.sparse.k_min = 1
 
+    # Strategy B only: independent sampled graph/query/layer/head calibration.
+    # k_min and baseline endpoints are ignored by adaptive_mass.
+    cfg.gt.sparse.mass_calibration = CN()
+    cfg.gt.sparse.mass_calibration.interval = 5
+    cfg.gt.sparse.mass_calibration.samples = 8500
+    cfg.gt.sparse.mass_calibration.tau = 0.90
+    cfg.gt.sparse.mass_calibration.q = 0.95
+    cfg.gt.sparse.mass_calibration.delta = 0.05
+    cfg.gt.sparse.mass_calibration.query_chunk_size = 64
+
     cfg.gt.sparse.random_attention = False
 
     cfg.gt.sparse.random_fraction = 0.1

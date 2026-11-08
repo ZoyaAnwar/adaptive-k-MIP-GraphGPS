@@ -58,6 +58,13 @@ class KScheduleTest(unittest.TestCase):
         self.assertEqual(self.values(config(k_decay=0.01)),
                          self.values(config(k_decay=0.99)))
 
+    def test_adaptive_mass_initial_budget_ignores_baseline_floor(self):
+        cfg = config('adaptive_mass', k=3, k_start=10, k_end=2, k_min=100)
+        self.assertEqual(scheduler.k_for_epoch(cfg, 0, 100), 50)
+        cfg.random_attention = True
+        with self.assertRaisesRegex(ValueError, 'random_attention'):
+            scheduler.k_for_epoch(cfg, 0, 100)
+
     def test_constant_ignores_adaptive_settings(self):
         cfg = config('constant', k=7, k_start=-10, k_end=90, k_min=20)
         self.assertEqual(self.values(cfg), [7] * 101)

@@ -145,6 +145,95 @@ epoch=0/249 progress=0.000 requested_k=50 on 8 layer(s) (schedule=linear)
 
 ---
 
+## Strategy B attention mass calibration
+
+Select the additional `adaptive_mass` schedule with the existing CLI mechanism:
+
+```bash
+python main.py --cfg configs/LRGB/Peptides-func/defaults/GPS+kmip-linear-50-to-10.yaml gt.sparse.k_schedule adaptive_mass
+
+# Colab runner: isolated adaptive run using the same dataset/model settings.
+DATASET=PascalVOC-SP RUNS=adaptive_mass SEEDS=0,1,2,3 bash colab/run_ablation.sh
+```
+
+Adaptive CLI runs automatically use `<out_dir>/adaptive_mass/<config-name[-tag]>/`
+with per-seed directories below that. The runner additionally separates its
+`<DATASET>/<MODE>/adaptive_mass` root. Directory identity markers are checked
+before writing config files, clearing outputs, or resuming: a non-adaptive
+experiment is rejected rather than reused. Baseline paths/defaults are unchanged.
+
+Defaults are a reference and initial k of 50, 8,500 independent observations,
+90% retained top-50 mass, 95% population coverage and 95% overall confidence.
+`gt.sparse.mass_calibration.interval` defaults to 5 and is configurable.
+Other settings under `gt.sparse.mass_calibration` are `samples` (8500), `tau`
+(0.90), `q` (0.95), `delta` (0.05), and `query_chunk_size` (64). Baseline
+`k`, `k_start`, `k_end` and **`k_min` do not constrain this strategy**; its
+selected k may independently increase or decrease anywhere from 1 to 50.
+
+The first five epochs use k=50. Calibration runs before zero-based epochs
+5, 10, ... strictly below `optim.max_epoch`. Thus the planned count is
+`C = floor((E - 1) / T)`; there is no unused final calibration. Each event
+uses fresh seeded draws with replacement: uniform training graph, uniform
+node within that graph, uniform SparseAttention layer, then uniform head.
+For the standard architecture this samples eight layers and four heads,
+without enforcing fixed per-layer/head quotas. Small graphs use only their
+available keys, up to 50. The empirical quantile level is
+`q + sqrt(log(2*C/delta)/(2*m))`, using order statistic `ceil(m*level)`.
+For 250 epochs and T=5, C=49 and the adjustment is approximately 0.02112;
+m stays 8500. Invalid settings whose adjusted level exceeds 1 are rejected.
+
+CUDA and PyKeOps `LazyTensor` are mandatory for this option. Calibration
+runs one graph at a time in frozen eval/no-gradient mode, always using k=50
+in every attention module. Only sampled query/head rows are extracted in
+chunks using symbolic top-k; no dense query-key score matrix is created.
+All model modes, previous k values, RNG states and hooks are restored even
+on failure. The existing attention code and batching/padding behavior are
+unchanged; single-graph reference passes contain no padding. Consequently,
+the mass guarantee describes the graph-local evaluation-mode reference,
+not padded/stochastic training attention or coverage between checkpoints.
+`random_attention=True`, runtime dataset transforms, and non-full-batch or
+non-graph training datasets are rejected. One graph must still fit GPU
+memory; query chunking does not eliminate the cost of its reference forward.
+
+Each event logs selected k, DKW parameters, retained-mass statistics,
+empirical coverage, a required-budget histogram, layer/head sample counts
+and coverage, calibration runtime, and peak allocated GPU memory. Epoch
+runtime includes calibration and archive I/O. Scalar diagnostics also go
+to W&B when enabled. Outputs under `<run_dir>/mass_calibration/` are:
+
+- `epoch_XXXXXX.npz`: sorted top-50 probabilities (8500 x 50, zero-padded
+  for short graphs), required budgets, graph and source graph IDs, query,
+  layer, head, eligible key counts, epoch, selected k, and run signature.
+  Graph IDs index the training subset; query/layer/head IDs are zero-based.
+- `epoch_XXXXXX.json`: full diagnostics including total calibration time.
+
+Consecutive events compare the mean sorted probability profiles using
+Jensen-Shannon divergence and the required-budget distributions using CDF
+and Wasserstein distances. These compare **independent samples**, not paired
+observations or temporal guarantees. Keep the archives with checkpoints:
+training resume restores the last calibration strictly before the resumed
+epoch, validates its settings, and replays later boundaries deterministically.
+Missing required archives cause an explicit error. An opt-in `MassSparseAttention`
+subclass includes its selected k in the normal model state dictionary; standard
+checkpoint loading automatically restores k for both training and standalone
+evaluation. Baseline attention retains its existing state-dictionary format and
+computations. New adaptive checkpoints require this budget metadata; older
+budget-less adaptive state dictionaries cannot silently default to k=50.
+
+Training initialization computes a streaming SHA-256 fingerprint of all graph
+attributes plus source indices and their order. A run manifest is saved even
+before the first calibration. Resume checks this identity and run settings,
+then verifies that checkpoint budgets match the corresponding archive, before
+metric history is rewritten. Keep the run identity and calibration files with
+training checkpoints. The fingerprint adds one CPU pass over the training set
+at startup; graph count alone is insufficient. Earlier local prototype runs
+without the manifest must be restarted rather than automatically resumed.
+
+Run `python -m unittest discover -s tests -p "test_*.py"` for baseline and
+Strategy B checks. Controller tests use real CPU tensors and a tiny symbolic
+backend stand-in. CUDA/KeOps and an A100 memory/runtime pilot must be checked
+in the training environment before making hardware performance claims.
+
 ## 5. Mental model
 
 ```
