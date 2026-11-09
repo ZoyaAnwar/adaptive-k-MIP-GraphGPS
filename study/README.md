@@ -88,6 +88,26 @@ snapshot. Compilation can dominate smoke runtime. Pilot graphs/batch size are in
 small; after this functional pilot, validate representative full-batch memory/runtime and
 full-dataset calibration cost on RunPod. Local CPU tests cannot validate these GPU paths.
 
+### Temporary prediction-warning option (smoke only)
+
+The notebook explicitly selects `SMOKE_PREDICTION_CHECK = 'warn'`. Only the final
+prediction-closeness assertion becomes non-blocking; differences emit RuntimeWarning.
+Numerical consistency is labelled **unverified**, even when functional smoke checks pass.
+Checkpoint/state equality, budget/mode checks, finite outputs/gradients, CUDA/KeOps,
+memory profiling, CPU checkpoint audits and adaptive calibration remain mandatory.
+
+Python/CLI retain the strict default: `workflow(..., prediction_check='strict')` or
+`--prediction-check strict`. Explicit `--prediction-check warn` enables the temporary
+exception. Supplementary profiling rejects warning mode. No comparison tolerance changes.
+Every comparison records maximum absolute error, RMS error, strict-tolerance outcome,
+and predicted-class agreement in `prediction_comparison/epoch_NNNNNN.json` and the case
+result observations. PascalVOC uses argmax classes; Peptides uses per-label logit >= 0
+(sigmoid >= 0.5). Agreement is a diagnostic, not F1/AP. Invalid shapes/dtypes/devices,
+empty outputs and nonfinite predictions still fail in both modes. Diagnostics are computed
+after profiled windows. Case results and the aggregate receipt preserve the unverified
+label; consuming a warning-mode receipt also emits a warning. This does not establish
+whether the differences are CUDA nondeterminism or a remaining consistency problem.
+
 ## Optional supplementary short profiling
 
 `python -m study.profile MANIFEST` plans only. Explicit `--execute` enables eight

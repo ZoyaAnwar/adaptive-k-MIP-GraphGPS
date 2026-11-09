@@ -161,6 +161,19 @@ class IndependentStudyTest(unittest.TestCase):
                         configs={j['config']:j['config_sha256'] for j in self.manifest['runs']})
         experiment.atomic_json(root/'status.json',dict(status='passed',hardware=hardware,provenance=provenance))
         self.assertEqual(smoke.verify_receipt(self.path.parent,self.manifest,hardware),root/'status.json')
+        receipt=json.loads((root/'status.json').read_text())
+        receipt.update(prediction_check='warn',numerical_consistency='unverified')
+        experiment.atomic_json(root/'status.json',receipt)
+        for case in root.glob('*/*/result.json'):
+            result=json.loads(case.read_text());result.update(prediction_check='warn',numerical_consistency='unverified')
+            experiment.atomic_json(case,result)
+        with self.assertWarnsRegex(RuntimeWarning,'UNVERIFIED'):
+            self.assertEqual(smoke.verify_receipt(self.path.parent,self.manifest,hardware),root/'status.json')
+        # Warning mode still requires checkpoint integrity in every case.
+        checkpoint=root/'PascalVOC-SP/linear/ckpt/199.ckpt'
+        original=checkpoint.read_bytes();checkpoint.write_bytes(b'corrupt')
+        with self.assertRaises(ValueError):smoke.verify_receipt(self.path.parent,self.manifest,hardware)
+        checkpoint.write_bytes(original)
         with self.assertRaises(ValueError): smoke.verify_receipt(self.path.parent,self.manifest,dict(driver='different'))
         freeze.write_text('changed environment')
         with self.assertRaises(ValueError): smoke.verify_receipt(self.path.parent,self.manifest,hardware)

@@ -7,11 +7,65 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import warnings
 
 from study.experiment import ROOT, DATASETS, METHODS, atomic_json, launch_lock
 
 
-def run_case(output, dataset, method, graphs=8, batch_size=2, profile=False, warmup_steps=0):
+PREDICTION_CHECKS = ('strict', 'warn')
+
+
+def validate_prediction_check(mode, profile=False):
+    if mode not in PREDICTION_CHECKS:
+        raise ValueError('prediction_check must be strict or warn')
+    if profile and mode != 'strict':
+        raise ValueError('Prediction warning mode is limited to smoke testing')
+
+
+def compare_predictions(actual, expected, mode='strict', task_type='classification', output=None):
+    """Relax only numerical closeness when explicitly requested; invalid outputs still fail."""
+    validate_prediction_check(mode)
+    import torch
+    if (actual.shape != expected.shape or actual.dtype != expected.dtype
+            or actual.device != expected.device or actual.numel() == 0):
+        raise ValueError('Prediction shape/dtype/device mismatch or empty output')
+    if not torch.isfinite(actual).all() or not torch.isfinite(expected).all():
+        raise ValueError('Nonfinite checkpoint predictions')
+    # Error statistics run on CPU after the profiled GPU window; model computation is unchanged.
+    a, b = actual.detach().cpu().double(), expected.detach().cpu().double()
+    delta = a - b
+    if task_type == 'classification_multilabel' or a.ndim < 2 or a.shape[-1] == 1:
+        agreement = ((a >= 0) == (b >= 0)).double().mean().item()
+        definition = 'per-label logit >= 0 (sigmoid probability >= 0.5)'
+    else:
+        agreement = (a.argmax(dim=-1) == b.argmax(dim=-1)).double().mean().item()
+        definition = 'argmax class per prediction row'
+    diagnostics = dict(prediction_check=mode, numerical_consistency='unverified' if mode == 'warn' else 'passed_strict_check',
+                       predictions_identical=torch.equal(actual, expected),
+                       max_absolute_error=delta.abs().max().item(), rms_error=delta.square().mean().sqrt().item(),
+                       predicted_class_agreement=agreement, class_agreement_definition=definition)
+    failure = None
+    try:
+        torch.testing.assert_close(actual, expected)  # Original dtype-specific tolerances.
+    except AssertionError as error:
+        failure = error
+    diagnostics['within_strict_tolerance'] = failure is None
+    if failure is not None and mode == 'strict':
+        diagnostics['numerical_consistency'] = 'failed_strict_check'
+    if output is not None:
+        atomic_json(output, diagnostics)  # Persist even when strict comparison raises.
+    print('Smoke prediction diagnostics: ' + json.dumps(diagnostics, allow_nan=False), flush=True)
+    if failure is not None and mode == 'strict':
+        raise failure
+    if mode == 'warn' and not diagnostics['predictions_identical']:
+        warnings.warn('Smoke predictions differ; numerical consistency is UNVERIFIED. '
+                      + json.dumps(diagnostics, allow_nan=False), RuntimeWarning, stacklevel=2)
+    return diagnostics
+
+
+def run_case(output, dataset, method, graphs=8, batch_size=2, profile=False, warmup_steps=0,
+             prediction_check='strict'):
+    validate_prediction_check(prediction_check, profile)
     import torch
     import graphgps  # Registers repository models/losses/config extensions.
     from torch_geometric import seed_everything
@@ -120,12 +174,14 @@ def run_case(output, dataset, method, graphs=8, batch_size=2, profile=False, war
                 restored_input=Batch.from_data_list([graph.clone()]).to('cuda:0');restored_input.split='val'
                 original_prediction,_=model(original_input)
                 restored_prediction,_=restored(restored_input)
-                torch.testing.assert_close(restored_prediction,original_prediction)
+                prediction_diagnostics=compare_predictions(
+                    restored_prediction,original_prediction,mode=prediction_check,task_type=cfg.dataset.task_type,
+                    output=output/'prediction_comparison'/f'epoch_{epoch:06d}.json')
             del restored
             if calibration and epoch==5:
                 resumed=MassCalibration(model,cfg.gt.sparse,subset,output,1,200,start_epoch=6)
                 if resumed.k!=k: raise ValueError('Calibration resume k mismatch')
-            results.append(dict(epoch=epoch,k=k,restored_k=restored_k,checkpoint_epoch=saved_checkpoint['epoch'],measured_window_seconds=window_seconds,loss=float(loss.detach().cpu()),memory=memory,calibration=stats))
+            results.append(dict(epoch=epoch,k=k,prediction_comparison=prediction_diagnostics,restored_k=restored_k,checkpoint_epoch=saved_checkpoint['epoch'],measured_window_seconds=window_seconds,loss=float(loss.detach().cpu()),memory=memory,calibration=stats))
         profiler.finish()
         ckpt=output/'ckpt'/f'{epoch}.ckpt';ckpt.parent.mkdir()
         torch.save(dict(epoch=epoch,model_state=model.state_dict(),optimizer_state=optimizer.state_dict(),scheduler_state=scheduler.state_dict()),ckpt)
@@ -133,11 +189,13 @@ def run_case(output, dataset, method, graphs=8, batch_size=2, profile=False, war
         observer.finish(True)
         atomic_json(output/'result.json',dict(status='passed',cohort='profiling_only' if profile else 'smoke_only',dataset=dataset,method=method,
             gpu=name,capacity_mib=capacity,graphs=len(subset),batch_size=batch_size,warmup_steps=warmup_steps,epochs_executed=2,
-            planned_full_epochs=200,observations=results,
+            planned_full_epochs=200,observations=results,prediction_check=prediction_check,
+            numerical_consistency='unverified' if prediction_check=='warn' else 'passed_strict_check',
             limitations='Small real-data subset; not full-run predictive performance, memory or timing'))
     except BaseException as error:
         observer.finish(False,repr(error))
-        atomic_json(output/'result.json',dict(status='failed',cohort='profiling_only' if profile else 'smoke_only',error=repr(error)))
+        atomic_json(output/'result.json',dict(status='failed',cohort='profiling_only' if profile else 'smoke_only',error=repr(error),
+                    prediction_check=prediction_check,numerical_consistency='unverified'))
         raise
 
 
@@ -157,6 +215,7 @@ def verify_receipt(study_root, manifest, hardware=None):
             continue
         try:
             from study.checkpoints import verify
+            warning_mode=False
             for dataset in DATASETS:
                 for method in METHODS:
                     directory=path.parent/dataset/method
@@ -165,6 +224,14 @@ def verify_receipt(study_root, manifest, hardware=None):
                             or result.get('dataset')!=dataset or result.get('method')!=method
                             or len(result.get('observations',[]))!=2):
                         raise ValueError('Incomplete smoke case')
+                    mode=result.get('prediction_check','strict')
+                    validate_prediction_check(mode)
+                    if mode!=receipt.get('prediction_check','strict'):
+                        raise ValueError('Smoke comparison mode differs from receipt')
+                    if mode=='warn':
+                        if result.get('numerical_consistency')!='unverified':
+                            raise ValueError('Warning-mode numerical consistency must remain unverified')
+                        warning_mode=True
                     if method=='adaptive_mass':
                         import numpy as np
                         calibration=result['observations'][-1].get('calibration')
@@ -174,20 +241,26 @@ def verify_receipt(study_root, manifest, hardware=None):
                             if archive['probabilities'].shape!=(8500,50) or archive['required'].shape!=(8500,):
                                 raise ValueError('Missing smoke calibration observations')
                     verify(directory,5 if method=='adaptive_mass' else 199,5 if method=='adaptive_mass' else 199)
+            if warning_mode:
+                warnings.warn('Smoke functional checks passed with prediction warnings enabled; '
+                              'numerical consistency remains UNVERIFIED.', RuntimeWarning, stacklevel=2)
             return path
         except (ValueError,OSError,KeyError,TypeError):
             continue
     raise ValueError('Run the opt-in eight-case A100 smoke workflow successfully before full training')
 
 
-def workflow(manifest_path,execute=False,graphs=8,batch_size=2,profile=False,warmup_steps=0):
+def workflow(manifest_path,execute=False,graphs=8,batch_size=2,profile=False,warmup_steps=0,
+             prediction_check='strict'):
+    validate_prediction_check(prediction_check, profile)
     from study.experiment import load_manifest, preflight, pending_reviews
     from study.report import inspect_all
     if graphs<1 or (batch_size is not None and batch_size<1) or warmup_steps<0: raise ValueError('Positive smoke subset/batch sizes required')
     manifest_path=Path(manifest_path)
     matrix=[(dataset,method) for dataset in DATASETS for method in METHODS]
     if not execute:
-        return dict(action='profiling_disabled' if profile else 'smoke_disabled',cases=matrix,graphs=graphs,batch_size=batch_size)
+        return dict(action='profiling_disabled' if profile else 'smoke_disabled',cases=matrix,graphs=graphs,batch_size=batch_size,prediction_check=prediction_check,
+                    numerical_consistency='not_run')
     with launch_lock(manifest_path):
         manifest=load_manifest(manifest_path)
         gates=pending_reviews(manifest,inspect_all(manifest['runs']))
@@ -198,23 +271,29 @@ def workflow(manifest_path,execute=False,graphs=8,batch_size=2,profile=False,war
                         configs={j['config']:j['config_sha256'] for j in manifest['runs']})
         root=manifest_path.parent/('profiling' if profile else 'smoke')/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
         root.mkdir(parents=True)
-        atomic_json(root/'status.json',dict(status='running',cohort='profiling_only' if profile else 'smoke_only',hardware=hardware))
+        atomic_json(root/'status.json',dict(status='running',cohort='profiling_only' if profile else 'smoke_only',hardware=hardware,
+                    prediction_check=prediction_check,numerical_consistency='unverified' if prediction_check=='warn' else 'not_run'))
         started=time.perf_counter()
         for dataset,method in matrix:
             directory=root/dataset/method
             command=[sys.executable,'-m','study.smoke','--case','--output',str(directory),
-                     '--dataset',dataset,'--method',method,'--graphs',str(graphs),'--batch-size',str(batch_size or 0)]
+                     '--dataset',dataset,'--method',method,'--graphs',str(graphs),'--batch-size',str(batch_size or 0),
+                     '--prediction-check',prediction_check]
             if profile: command += ['--profile','--warmup-steps',str(warmup_steps)]
             with (root/'launcher.log').open('a') as log:
                 completed=subprocess.run(command,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,
                                          env=dict(os.environ,CUDA_VISIBLE_DEVICES='0',KMIP_REQUIRE_KEOPS='1'))
             if completed.returncode:
-                atomic_json(root/'status.json',dict(status='failed',case=[dataset,method],elapsed_seconds=time.perf_counter()-started))
+                atomic_json(root/'status.json',dict(status='failed',case=[dataset,method],elapsed_seconds=time.perf_counter()-started,
+                            prediction_check=prediction_check,numerical_consistency='unverified'))
                 raise RuntimeError('Smoke failed; inspect '+str(root/'launcher.log'))
         atomic_json(root/'status.json',dict(status='passed',cohort='profiling_only' if profile else 'smoke_only',hardware=hardware,
-                    elapsed_seconds=time.perf_counter()-started,cases=matrix,provenance=provenance))
+                    elapsed_seconds=time.perf_counter()-started,cases=matrix,provenance=provenance,prediction_check=prediction_check,
+                    numerical_consistency='unverified' if prediction_check=='warn' else 'passed_strict_check'))
         if not profile: verify_receipt(manifest_path.parent,manifest)
-        return dict(action='profiling_passed' if profile else 'smoke_passed',output=str(root))
+        return dict(action='profiling_passed' if profile else 'smoke_passed',output=str(root),
+                    prediction_check=prediction_check,
+                    numerical_consistency='unverified' if prediction_check=='warn' else 'passed_strict_check')
 
 
 if __name__=='__main__':
@@ -222,12 +301,14 @@ if __name__=='__main__':
     parser.add_argument('--manifest');parser.add_argument('--execute',action='store_true')
     parser.add_argument('--case',action='store_true');parser.add_argument('--output')
     parser.add_argument('--dataset',choices=DATASETS);parser.add_argument('--method',choices=METHODS)
+    parser.add_argument('--prediction-check',choices=PREDICTION_CHECKS,default='strict',
+                        help='Smoke only: warn records numerical differences without failing their equality assertion')
     parser.add_argument('--profile',action='store_true');parser.add_argument('--warmup-steps',type=int,default=0)
     parser.add_argument('--graphs',type=int,default=8);parser.add_argument('--batch-size',type=int,default=2)
     args=parser.parse_args()
     if args.case:
         if not all((args.output,args.dataset,args.method)): parser.error('Case requires output/dataset/method')
-        run_case(args.output,args.dataset,args.method,args.graphs,args.batch_size or None,args.profile,args.warmup_steps)
+        run_case(args.output,args.dataset,args.method,args.graphs,args.batch_size or None,args.profile,args.warmup_steps,args.prediction_check)
     else:
         if not args.manifest: parser.error('--manifest is required')
-        print(json.dumps(workflow(args.manifest,args.execute,args.graphs,args.batch_size or None,args.profile,args.warmup_steps),indent=2))
+        print(json.dumps(workflow(args.manifest,args.execute,args.graphs,args.batch_size or None,args.profile,args.warmup_steps,args.prediction_check),indent=2))
