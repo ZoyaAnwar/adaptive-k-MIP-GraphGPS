@@ -24,6 +24,8 @@ def run_case(output, dataset, method, graphs=8, batch_size=2, profile=False, war
                       new_optimizer_config, new_scheduler_config)
     from graphgps.utils import my_create_loader
     from graphgps.adaptive_k.train_schedule import set_epoch_k
+    from graphgps.adaptive_k.checkpoint_budget import restore_checkpoint_budget
+    from graphgps.layer.sparse_attention_layer import SparseAttention
     from graphgps.adaptive_k.mass_calibration import MassCalibration
     from graphgps.memory_profiling import GPUMemoryProfiler
     from graphgps.study_runtime import StudyRuntime
@@ -95,12 +97,23 @@ def run_case(output, dataset, method, graphs=8, batch_size=2, profile=False, war
             with torch.no_grad(): next(model.parameters()).add_(1)
             if observer.restore(model,optimizer,scheduler)!=epoch+1: raise ValueError('Resume epoch mismatch')
             restored=create_model()
-            restored.load_state_dict(torch.load(observer.recovery,map_location='cpu',weights_only=False)['model_state'])
+            saved_checkpoint=torch.load(observer.recovery,map_location='cpu',weights_only=False)
+            restored.load_state_dict(saved_checkpoint['model_state'])
+            restored_k=restore_checkpoint_budget(
+                restored,saved_checkpoint,cfg.gt.sparse,cfg.optim.max_epoch)
+            original_budgets=[m.k for m in model.modules() if isinstance(m,SparseAttention)]
+            restored_budgets=[m.k for m in restored.modules() if isinstance(m,SparseAttention)]
+            if original_budgets!=restored_budgets:
+                raise ValueError(f'Checkpoint budget mismatch at epoch {epoch}: {original_budgets} vs {restored_budgets}')
             for key,value in state.items():
                 for actual in (model.state_dict()[key],restored.state_dict()[key]):
                     if torch.is_tensor(value): torch.testing.assert_close(actual.cpu(),value)
                     elif actual!=value: raise ValueError('Adaptive extra-state restoration failed')
             restored.eval()
+            if any(m.training for m in model.modules()) or any(m.training for m in restored.modules()):
+                raise ValueError('Checkpoint comparison requires both models in evaluation mode')
+            print(f'Checkpoint comparison: {dataset}/{method} epoch={saved_checkpoint["epoch"]} '
+                  f'original_k={original_budgets} restored_k={restored_budgets} eval=True',flush=True)
             with torch.no_grad():
                 graph=loaders[1].dataset[0]
                 original_input=Batch.from_data_list([graph.clone()]).to('cuda:0');original_input.split='val'
@@ -112,7 +125,7 @@ def run_case(output, dataset, method, graphs=8, batch_size=2, profile=False, war
             if calibration and epoch==5:
                 resumed=MassCalibration(model,cfg.gt.sparse,subset,output,1,200,start_epoch=6)
                 if resumed.k!=k: raise ValueError('Calibration resume k mismatch')
-            results.append(dict(epoch=epoch,k=k,measured_window_seconds=window_seconds,loss=float(loss.detach().cpu()),memory=memory,calibration=stats))
+            results.append(dict(epoch=epoch,k=k,restored_k=restored_k,checkpoint_epoch=saved_checkpoint['epoch'],measured_window_seconds=window_seconds,loss=float(loss.detach().cpu()),memory=memory,calibration=stats))
         profiler.finish()
         ckpt=output/'ckpt'/f'{epoch}.ckpt';ckpt.parent.mkdir()
         torch.save(dict(epoch=epoch,model_state=model.state_dict(),optimizer_state=optimizer.state_dict(),scheduler_state=scheduler.state_dict()),ckpt)

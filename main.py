@@ -28,7 +28,7 @@ from torch_geometric.graphgym.register import train_dict
 from torch_geometric import seed_everything
 
 from graphgps.finetuning import load_pretrained_model_cfg, \
-    init_model_from_pretrained
+    init_model_from_pretrained, CHECKPOINT_EVAL_MODES
 from graphgps.logger import create_logger
 from graphgps.utils import my_create_loader
 
@@ -261,7 +261,8 @@ if __name__ == '__main__':
         if cfg.pretrained.dir:
             model = init_model_from_pretrained(
                 model, cfg.pretrained.dir, cfg.pretrained.freeze_main,
-                cfg.pretrained.reset_prediction_head, seed=cfg.pretrained.seed
+                cfg.pretrained.reset_prediction_head, seed=cfg.pretrained.seed,
+                restore_budget=cfg.train.mode in CHECKPOINT_EVAL_MODES
             )
         if os.environ.get('KMIP_REQUIRE_KEOPS') == '1':
             require_keops_for_research(model)

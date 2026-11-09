@@ -7,6 +7,12 @@ from torch_geometric.graphgym.config import set_cfg
 from yacs.config import CfgNode
 
 
+CHECKPOINT_EVAL_MODES = frozenset((
+    'inference-only', 'inference-only-benchmark', 'PCQM4Mv2-inference-benchmark',
+    'log-attn-weights', 'log-attn-weights-benchmark',
+))
+
+
 def get_final_pretrained_ckpt(ckpt_dir):
     if osp.exists(ckpt_dir):
         names = os.listdir(ckpt_dir)
@@ -97,7 +103,8 @@ def load_pretrained_model_cfg(cfg):
 
 
 def init_model_from_pretrained(model, pretrained_dir,
-                               freeze_main=False, reset_prediction_head=True, device=None, seed=0):
+                               freeze_main=False, reset_prediction_head=True, device=None, seed=0,
+                               restore_budget=False):
     """ Copy model parameters from pretrained model except the prediction head.
 
     Args:
@@ -107,6 +114,8 @@ def init_model_from_pretrained(model, pretrained_dir,
             of the `main body` (train the prediction head only), else train all.
         reset_prediction_head: If True, reset parameters of the prediction head,
             else keep the pretrained weights.
+        restore_budget: For standalone evaluation, restore k using the checkpoint
+            epoch and saved training config. False preserves transfer-training behavior.
 
     Returns:
         Updated pytorch model object.
@@ -134,6 +143,14 @@ def init_model_from_pretrained(model, pretrained_dir,
     model_dict.update(pretrained_dict)
     # Load the new state dict.
     model.load_state_dict(model_dict)
+
+    if restore_budget:
+        from graphgps.adaptive_k.checkpoint_budget import restore_checkpoint_budget
+        saved_cfg = CfgNode()
+        set_cfg(saved_cfg)
+        set_new_cfg_allowed(saved_cfg, True)
+        saved_cfg.merge_from_file(osp.join(pretrained_dir, 'config.yaml'))
+        restore_checkpoint_budget(model, ckpt, saved_cfg.gt.sparse, saved_cfg.optim.max_epoch)
 
     if freeze_main:
         for key, param in model.named_parameters():

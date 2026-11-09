@@ -54,6 +54,23 @@ requiring PyTorch. Pre-audit trusted local outputs can be audited explicitly wit
 `python -m study.checkpoints RUN_DIR --best-epoch E --final-epoch 199`.
 Do not deserialize checkpoints from untrusted sources.
 
+## Checkpoint budgets during standalone evaluation
+
+Baseline attention budgets remain regular attributes; their checkpoint formats are
+unchanged. After loading weights, `restore_checkpoint_budget` reconstructs fixed,
+linear and exponential k from the saved training configuration and the checkpoint's
+actual epoch (including a best-validation checkpoint). Adaptive selected k remains in
+its existing extra state and is validated rather than reset to the reference budget.
+
+The smoke comparison uses this helper and checks both models' budgets/evaluation modes
+before comparing predictions. Standalone pretrained evaluation enables restoration via
+`init_model_from_pretrained(..., restore_budget=True)`; main.py enables it automatically
+for inference/attention-inspection modes. The saved config.yaml supplies the original
+training duration, regardless of evaluation-only max_epoch overrides. For CLI evaluation
+of a study config, set `study.enabled False`, select the intended pretrained seed and use
+a separate output directory. Training/transfer-learning calls keep restoration disabled;
+the existing epoch-wise training schedule and resume behavior remain unchanged.
+
 ## CUDA/KeOps smoke workflow
 
 After common environment/data setup, explicitly enable RUN_SMOKE. The launcher executes
