@@ -1,4 +1,5 @@
 from torch_geometric.graphgym.register import register_config
+from yacs.config import CfgNode as CN
 
 
 @register_config('overwrite_defaults')
@@ -49,3 +50,9 @@ def extended_cfg(cfg):
     cfg.model.param_budget = 500000
 
     cfg.train.eval_smoothing_metrics = False
+
+@register_config('study_cfg')
+def study_cfg(cfg):
+    cfg.study = CN()
+    cfg.study.enabled = False
+    cfg.study.recovery_every = 1

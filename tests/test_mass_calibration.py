@@ -178,6 +178,7 @@ class ControllerTest(unittest.TestCase):
                    patch.object(torch.cuda, 'synchronize'),
                    patch.object(torch.cuda, 'reset_peak_memory_stats'),
                    patch.object(torch.cuda, 'max_memory_allocated', return_value=1234),
+                   patch.object(torch.cuda, 'max_memory_reserved', return_value=4096),
                    patch.object(torch.cuda, 'mem_get_info', return_value=(10**9, 10**9))]
         for item in patches:
             item.start()
@@ -265,6 +266,18 @@ class ControllerTest(unittest.TestCase):
         self.model.layers[0].use_keops = True
         with self.assertRaisesRegex(ValueError, 'dataset identity'):
             self.controller(start=7)
+
+    def test_shared_epoch_profiler_owns_calibration_reset(self):
+        controller = self.controller()
+        class SharedProfiler:
+            def calibration_peak(self):
+                return dict(peak_allocated_mib=3.0, peak_reserved_mib=7.0)
+        with patch.object(torch.cuda, 'reset_peak_memory_stats') as reset:
+            result = controller.step(5, SharedProfiler())
+        reset.assert_not_called()
+        self.assertEqual(result['peak_allocated_mib'], 3.0)
+        self.assertEqual(result['peak_reserved_mib'], 7.0)
+        self.assertEqual(result['peak_gpu_memory_bytes'], 3 * 1024**2)
 
     def test_serialized_checkpoint_training_resume(self):
         with patch.dict(sys.modules, {'graphgps.layer.sparse_attention_layer': attention}):

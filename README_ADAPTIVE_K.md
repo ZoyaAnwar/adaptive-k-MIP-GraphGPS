@@ -234,6 +234,57 @@ Strategy B checks. Controller tests use real CPU tensors and a tiny symbolic
 backend stand-in. CUDA/KeOps and an A100 memory/runtime pilot must be checked
 in the training environment before making hardware performance claims.
 
+## Standardized GPU allocator memory profiling
+
+The common `custom` training loop profiles `constant` (fixed k), `linear`,
+`exponential`, and `adaptive_mass` with identical epoch boundaries. Immediately
+before each epoch's scheduling/calibration, it synchronizes the model's CUDA
+device and resets peak counters once. After training, validation/test where
+scheduled, metric computation, and epoch bookkeeping/checkpointing, it
+synchronizes again and reads both `max_memory_allocated()` and
+`max_memory_reserved()`. It never empties the CUDA cache. Both peaks are
+absolute allocator usage, not increments relative to the start of the epoch.
+
+Structured files under each seed's `<run_dir>/memory/` are:
+
+- `epochs.jsonl`: one record per completed epoch with `peak_allocated_mib`,
+  `peak_reserved_mib`, requested `k`, evaluation splits actually scheduled,
+  device/CUDA status, and schedule/dataset/seed/split metadata. Adaptive
+  calibration epochs additionally have `calibration_performed: true` and
+  `calibration_peak_allocated_mib` / `calibration_peak_reserved_mib`.
+- `run.json`: separate `run_peak_allocated_mib` and `run_peak_reserved_mib`,
+  maintained as maxima across observed epoch windows. Per-epoch resets cannot
+  erase these run peaks. `finished` indicates a normally completed invocation;
+  `recorded_epochs` and `complete_epoch_history` expose missing earlier data.
+
+Values are in **MiB (2^20 bytes)**. CPU runs write null memory values with
+`cuda_enabled: false` and make no CUDA synchronization/reset/peak calls.
+Allocated memory measures live tensor allocations; reserved memory measures
+PyTorch's allocator pool, including cached blocks. Neither is total GPU VRAM
+usage reported by NVML/nvidia-smi, and allocations outside the PyTorch allocator
+are not captured. Existing `gpu_memory` snapshot fields and timing/metric logs
+are unchanged.
+
+Calibration is first in its epoch, so its synchronized peak snapshot occurs
+before training, without resetting the common epoch counters. Its JSON
+additionally exposes `peak_allocated_mib` and `peak_reserved_mib`, while
+retaining the existing `peak_gpu_memory_bytes` field for compatibility.
+Standalone calibration, outside the training-loop profiler, still owns its
+own reset window.
+
+On resume, canonical epoch records at/after the checkpoint's next epoch are
+replayed without duplicate epoch rows. The observed run high-water mark is
+retained across sessions, including previously measured replayed work.
+Resuming a run that predates this instrumentation cannot recover missing
+peaks; the incomplete epoch history is flagged. Forced termination before an
+epoch record is written can also lose that window's peak. The measured scope
+excludes model/dataset initialization and standalone inference/profiling tools.
+
+Compare matched hardware, batch size, dataset/model, precision, evaluation
+schedule and backend. Reserved peaks reflect cache retention, intentionally
+without method-specific cache clearing. Hardware/CUDA validation remains a
+separate GPU smoke test; boundary/reset/logging tests run with mocked counters.
+
 ## 5. Mental model
 
 ```
@@ -255,3 +306,15 @@ colab/                           # notebook clones GitHub
 ## 6. Upstream citation
 
 Cite the bibtex in [`README.md`](README.md). Original license: MIT (see [`LICENSE`](LICENSE)).
+
+
+## 7. Independent RunPod study
+
+The dedicated [Study200 notebook](colab/RunPod_Study200.ipynb) has 14 independently
+selectable experiment cells, persistent global adaptive review gates, incremental
+publication exports and separate historical-predictive imports. Both datasets use
+200 epochs in study-only configs. The six VOC scheduling repetitions and six fixed50
+runs remain full runs. A separate opt-in A100 CUDA/KeOps smoke workflow must pass
+before full study launches. Optional subset profiling never replaces full-run results.
+See [study/README.md](study/README.md) for recovery, checkpoint audits, output cohorts,
+commands and measurement limitations. Original LRGB configs are unchanged.

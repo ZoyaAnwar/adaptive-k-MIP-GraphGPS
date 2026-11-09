@@ -19,6 +19,7 @@ from torch_geometric.graphgym.utils.epoch import is_eval_epoch, is_ckpt_epoch
 from torch_geometric.utils import to_dense_batch
 
 from graphgps.adaptive_k import set_epoch_k
+from graphgps.memory_profiling import GPUMemoryProfiler
 from graphgps.loss.subtoken_prediction_loss import subtoken_cross_entropy
 from graphgps.utils import cfg_to_dict, flatten_dict, make_wandb_name, dirichlet_energy, mean_average_distance, mean_norm
 
@@ -343,7 +344,7 @@ def _restore_perf_history(loggers, start_epoch):
 
 
 @register_train('custom')
-def custom_train(loggers, loaders, model, optimizer, scheduler):
+def custom_train(loggers, loaders, model, optimizer, scheduler, study_observer=None):
     """
     Customized training pipeline.
 
@@ -356,9 +357,12 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
 
     """
     start_epoch = 0
+    if study_observer:
+        study_observer.validate_dataset(loaders[0].dataset)
     if cfg.train.auto_resume:
-        start_epoch = load_ckpt(model, optimizer, scheduler,
-                                cfg.train.epoch_resume)
+        recovered = study_observer.restore(model, optimizer, scheduler) if study_observer else None
+        start_epoch = recovered if recovered is not None else load_ckpt(
+            model, optimizer, scheduler, cfg.train.epoch_resume)
     if start_epoch == cfg.optim.max_epoch:
         logging.info('Checkpoint found, Task already done')
     else:
@@ -389,26 +393,46 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
             model, cfg.gt.sparse, loaders[0].dataset, cfg.run_dir,
             cfg.seed, cfg.optim.max_epoch, start_epoch)
     perf = _restore_perf_history(loggers, start_epoch)
+    memory_profiler = GPUMemoryProfiler(
+        next(model.parameters()).device, cfg.run_dir,
+        dict(schedule=cfg.gt.sparse.k_schedule, dataset=cfg.dataset.name,
+             dataset_format=cfg.dataset.format, seed=cfg.seed,
+             split_index=cfg.dataset.split_index), start_epoch)
+    if study_observer:
+        study_observer.prepare(start_epoch)
     for cur_epoch in range(start_epoch, cfg.optim.max_epoch):
+        if study_observer:
+            study_observer.begin_epoch(cur_epoch)
+        memory_profiler.begin_epoch(cur_epoch)
         if mass_calibration is None:
-            set_epoch_k(model, cfg.gt.sparse, cur_epoch, cfg.optim.max_epoch)
+            current_k = set_epoch_k(model, cfg.gt.sparse, cur_epoch, cfg.optim.max_epoch)
             start_time = time.perf_counter()
         else:
             # Include calibration and archive I/O in total epoch runtime.
             start_time = time.perf_counter()
-            calibration_stats = mass_calibration.step(cur_epoch)
+            calibration_started = time.perf_counter()
+            calibration_stats = mass_calibration.step(cur_epoch, memory_profiler)
+            if study_observer:
+                study_observer.phase('calibration_wall', time.perf_counter() - calibration_started if calibration_stats is not None else 0.0)
+            current_k = mass_calibration.k
             if cfg.wandb.use and calibration_stats is not None:
                 run.log({f'calibration/{key}': value
                          for key, value in calibration_stats.items()
                          if isinstance(value, (int, float))}, step=cur_epoch)
+        phase_started = time.perf_counter()
         train_epoch(loggers[0], loaders[0], model, optimizer, scheduler,
                     cfg.optim.batch_accumulation)
         perf[0].append(loggers[0].write_epoch(cur_epoch))
+        if study_observer:
+            study_observer.phase('train', time.perf_counter() - phase_started)
         if is_eval_epoch(cur_epoch):
             for i in range(1, num_splits):
+                phase_started = time.perf_counter()
                 eval_epoch(loggers[i], loaders[i], model,
                            split=split_names[i - 1])
                 perf[i].append(loggers[i].write_epoch(cur_epoch))
+                if study_observer:
+                    study_observer.phase(split_names[i - 1], time.perf_counter() - phase_started)
         else:
             for i in range(1, num_splits):
                 perf[i].append(perf[i][-1])
@@ -491,6 +515,14 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
                             gtl.attention.gamma.requires_grad:
                         logging.info(f"    {gtl.__class__.__name__} {li}: "
                                      f"gamma={gtl.attention.gamma.item()}")
+        if study_observer:
+            study_observer.stage_recovery(cur_epoch, model, optimizer, scheduler)
+        memory_profiler.end_epoch(
+            cur_epoch, current_k,
+            split_names[:num_splits - 1] if is_eval_epoch(cur_epoch) else [])
+        if study_observer:
+            study_observer.end_epoch(cur_epoch, model, optimizer, scheduler, best_epoch)
+    memory_profiler.finish()
     logging.info(f"Avg time per epoch: {np.mean(full_epoch_times):.2f}s")
     logging.info(f"Total train loop time: {np.sum(full_epoch_times) / 3600:.2f}h")
     for logger in loggers:

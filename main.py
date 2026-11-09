@@ -282,8 +282,15 @@ if __name__ == '__main__':
                                 "default train.mode, set it to `custom`")
             train(loggers, loaders, model, optimizer, scheduler)
         else:
-            train_dict[cfg.train.mode](loggers, loaders, model, optimizer,
-                                       scheduler)
+            if cfg.study.enabled:
+                if cfg.train.mode != 'custom':
+                    raise ValueError('Study experiments require train.mode=custom')
+                from graphgps.study_runtime import run_study_training
+                run_study_training(train_dict[cfg.train.mode], cfg,
+                                   loggers, loaders, model, optimizer, scheduler)
+            else:
+                train_dict[cfg.train.mode](loggers, loaders, model, optimizer,
+                                           scheduler)
         end = time.time()
         logging.info(f"[*] Training completed in {end - begin}s")
 

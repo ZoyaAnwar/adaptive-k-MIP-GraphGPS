@@ -125,14 +125,16 @@ class MassCalibration:
             raise ValueError('Adaptive checkpoint budget differs from calibration archive')
         apply_k_to_model(self.model, self.k)
 
-    def step(self, epoch):
+    def step(self, epoch, memory_profiler=None):
         if epoch not in self.epochs:
             apply_k_to_model(self.model, self.k)
             logging.info('adaptive_mass epoch=%s requested_k=%s', epoch, self.k)
             return None
         torch.cuda.synchronize(self.device)
         started = time.perf_counter()
-        torch.cuda.reset_peak_memory_stats(self.device)
+        if memory_profiler is None:
+            # Standalone calibration owns its window; training owns the full epoch.
+            torch.cuda.reset_peak_memory_stats(self.device)
         m = self.options.samples
         rng = np.random.default_rng(np.random.SeedSequence([self.seed, epoch, 9187]))
         graphs = rng.integers(len(self.dataset), size=m)
@@ -192,7 +194,14 @@ class MassCalibration:
                            k_delta=k - int(self.previous['k']))
         torch.cuda.synchronize(self.device)
         summary['reference_seconds'] = time.perf_counter() - started
-        summary['peak_gpu_memory_bytes'] = torch.cuda.max_memory_allocated(self.device)
+        if memory_profiler is not None:
+            peaks = memory_profiler.calibration_peak()
+        else:
+            peaks = dict(peak_allocated_mib=torch.cuda.max_memory_allocated(self.device) / 1024**2,
+                         peak_reserved_mib=torch.cuda.max_memory_reserved(self.device) / 1024**2)
+        summary.update(peaks)
+        # Preserve the existing allocated-byte diagnostic for downstream readers.
+        summary['peak_gpu_memory_bytes'] = int(peaks['peak_allocated_mib'] * 1024**2)
         # Graph IDs are training-subset positions; source indices are also recorded.
         source = np.asarray(self.dataset.indices()) if hasattr(self.dataset, 'indices') else np.arange(len(self.dataset))
         target = self.directory / f'epoch_{epoch:06d}.npz'

@@ -1,0 +1,22 @@
+# Bootstrap once on a version-matched CUDA PyTorch image, then freeze the environment.
+# PyTorch itself is supplied by the RunPod image; torch-scatter uses matching binary wheels.
+yacs
+tqdm
+pyyaml
+ogb
+rdkit
+einops
+tensorboardX
+torchmetrics
+wandb
+performer-pytorch
+pytorch_lightning
+scikit-learn
+pandas
+scipy
+h5py
+networkx
+matplotlib
+psutil
+torch-geometric
+pykeops
