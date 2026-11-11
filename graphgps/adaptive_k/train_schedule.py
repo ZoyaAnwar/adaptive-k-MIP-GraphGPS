@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import torch.nn as nn
 
@@ -17,6 +18,7 @@ def k_for_epoch(sparse_cfg, epoch: int, max_epoch: int) -> int:
       - linear: interpolate ``k_start`` -> ``k_end`` over epochs
       - exponential: geometric interpolation from ``k_start`` to ``k_end``
         (defaults 50 to 10), subject to the adaptive ``k_min`` floor
+      - mirrored_exponential, decrease_increase: predefined 200-epoch curves
     """
     schedule = getattr(sparse_cfg, 'k_schedule', 'constant') or 'constant'
     k_default = int(sparse_cfg.k)
@@ -26,6 +28,16 @@ def k_for_epoch(sparse_cfg, epoch: int, max_epoch: int) -> int:
         if getattr(sparse_cfg, 'random_attention', False):
             raise ValueError('adaptive_mass rejects random_attention=True')
         return 50  # Initial/reference budget; MassCalibration manages later epochs.
+    if schedule in ('mirrored_exponential', 'decrease_increase'):
+        if max_epoch != 200 or not 0 <= epoch < max_epoch:
+            raise ValueError(f'{schedule} requires 200 epochs indexed from 0 to 199')
+        # The repository rounds with Python round(), including ties to even.
+        if schedule == 'mirrored_exponential':
+            t = epoch / (max_epoch - 1)
+            return int(round(60 - 50 * 0.2 ** (1 - t)))
+        if epoch <= 140:
+            return int(round(30 + 20 * math.cos(math.pi * epoch / 140)))
+        return int(round(10 + 2.5 * (1 - math.cos(math.pi * (epoch - 140) / 59))))
     default_start = 50 if schedule == 'exponential' else k_default
     default_end = 10 if schedule == 'exponential' else k_default
     k_start = sparse_cfg.k_start if sparse_cfg.k_start is not None else default_start
@@ -49,7 +61,7 @@ def k_for_epoch(sparse_cfg, epoch: int, max_epoch: int) -> int:
         return max(k_min, int(round(k_start * (k_end / k_start) ** t)))
     raise ValueError(
         f"Unknown gt.sparse.k_schedule={schedule!r}; "
-        f"expected one of: constant, linear, exponential, adaptive_mass"
+        f"expected one of: constant, linear, exponential, adaptive_mass, mirrored_exponential, decrease_increase"
     )
 
 

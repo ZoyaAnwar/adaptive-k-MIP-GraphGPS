@@ -1,5 +1,6 @@
 """Exercise the real scheduler with lightweight stand-ins for model dependencies."""
 import importlib.util
+import math
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import unittest
@@ -103,6 +104,49 @@ class KScheduleTest(unittest.TestCase):
         k = scheduler.set_epoch_k(model, config(), 50, 101)
         self.assertEqual(k, 22)
         self.assertEqual([layer.k for layer in layers], [22, 99, 22])
+
+
+class NewPascalVOCScheduleTest(unittest.TestCase):
+    def test_mirrored_exponential_matches_reflected_exponential(self):
+        actual = [scheduler.k_for_epoch(config('mirrored_exponential'), e, 200) for e in range(200)]
+        reversed_reference = [60 - scheduler.k_for_epoch(config(), e, 200) for e in reversed(range(200))]
+        self.assertEqual(actual, reversed_reference)
+        self.assertEqual([actual[e] for e in (0, 50, 100, 149, 175, 199)], [50, 45, 38, 27, 19, 10])
+        self.assertTrue(all(a >= b for a, b in zip(actual, actual[1:])))
+
+    def test_cosine_turn_and_intermediate_values(self):
+        actual = [scheduler.k_for_epoch(config('decrease_increase'), e, 200) for e in range(200)]
+        self.assertEqual([actual[e] for e in (0, 35, 70, 105, 140, 160, 170, 199)],
+                         [50, 44, 30, 16, 10, 11, 13, 15])
+        # Equivalent squared-trigonometric form provides a full trajectory oracle.
+        reference = [round(10 + 40 * math.cos(math.pi * e / 280)**2) if e <= 140
+                     else round(10 + 5 * math.sin(math.pi * (e - 140) / 118)**2)
+                     for e in range(200)]
+        self.assertEqual(actual, reference)
+        self.assertTrue(all(a >= b for a, b in zip(actual[:140], actual[1:141])))
+        self.assertTrue(all(a <= b for a, b in zip(actual[140:], actual[141:])))
+
+    def test_every_layer_and_independent_runs(self):
+        for method in ('mirrored_exponential', 'decrease_increase'):
+            runs = []
+            for _ in range(2):
+                cfg = config(method)
+                layers = [Attention() for _ in range(8)]
+                model = SimpleNamespace(modules=lambda: iter(layers))
+                observed = []
+                for epoch in range(200):
+                    k = scheduler.set_epoch_k(model, cfg, epoch, 200)
+                    self.assertIs(type(k), int)
+                    self.assertEqual([layer.k for layer in layers], [k] * 8)
+                    observed.append(k)
+                runs.append(observed)
+            self.assertEqual(runs[0], runs[1])
+
+    def test_new_study_requires_the_defined_epoch_range(self):
+        for method in ('mirrored_exponential', 'decrease_increase'):
+            for epoch, epochs in ((0, 1), (0, 250), (-1, 200), (200, 200)):
+                with self.assertRaises(ValueError):
+                    scheduler.k_for_epoch(config(method), epoch, epochs)
 
 
 if __name__ == '__main__':
